@@ -25,8 +25,10 @@ import {
 } from "./embed";
 import {
   dropAddsTile,
+  layoutNeedsSessionList,
   MAX_PANES,
   MAX_TILES,
+  paneNeedsSessionList,
   serializedTileCount,
   v1PaneSeeds,
   type DropEdge,
@@ -318,7 +320,14 @@ export function loadPersistedSplit(): void {
   splitState.active = true;
 }
 
+export function restoredCanvasNeedsSessionList(): boolean {
+  if (!pendingSeed) return false;
+  if (pendingSeed.kind === "v1") return pendingSeed.seeds.some((seed) => paneNeedsSessionList(seed));
+  return layoutNeedsSessionList(pendingSeed.layout);
+}
+
 export function mountRestoredCanvas(): boolean {
+  if (splitState.active && (dockApi?.panels.length ?? 0) > 0) return true;
   if (!splitState.active || (!pendingSeed && !lastLayout)) return false;
   if (!ensureCanvas()) {
     splitState.active = false;

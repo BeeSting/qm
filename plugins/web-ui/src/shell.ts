@@ -30,7 +30,7 @@ import {
   resetChatState,
   teardownActiveChat,
 } from "./chat";
-import { composerState, resetComposer, resyncModelSelection } from "./composer";
+import { composerState, resetComposer, resyncModelSelection, seedRuntimeConfig } from "./composer";
 import { clearAllDrafts, saveDraft, storedDraft } from "./drafts";
 import { deepLinkPath, parseDeepLink, UI_BASE } from "./deep-link";
 import { embedMode } from "./embed";
@@ -41,6 +41,7 @@ import {
   exitSplitIfActive,
   loadPersistedSplit,
   mountRestoredCanvas,
+  restoredCanvasNeedsSessionList,
   splitState,
 } from "./split";
 import { activityOf } from "./session-list";
@@ -621,14 +622,17 @@ export async function boot(): Promise<void> {
   }
   resetKeychainState();
   appState.me = (await r.json()) as Me;
-  const runtimeConfig = await fetchRuntimeConfig(`personal:${appState.me.user}`);
-  if (runtimeConfig)
+  const personalScope = `personal:${appState.me.user}`;
+  const runtimeConfig = await fetchRuntimeConfig(personalScope);
+  if (runtimeConfig) {
     applyRuntimeOptions(
       runtimeConfig.approvedHarnesses,
       runtimeConfig.modelsByHarness,
       runtimeConfig.effective,
       runtimeConfig.modelCatalog,
     );
+    seedRuntimeConfig(personalScope, runtimeConfig);
+  }
   resyncModelSelection();
   mountShell();
   warmDeferredChunks();
@@ -641,6 +645,9 @@ export async function boot(): Promise<void> {
   const viewIntent = isView(wanted) && wanted !== "chats";
   const entriesPrefetch =
     wantedSession && !viewIntent ? fetchTranscript(wantedSession, { tailTurns: TAIL_TURNS }).catch(() => null) : null;
+
+  const bareEntry = !viewIntent && !wantedSession && wanted !== "app-edit" && !connectedProvider;
+  if (bareEntry && !restoredCanvasNeedsSessionList()) mountRestoredCanvas();
 
   await refreshSessions({ showLoading: true });
 
@@ -694,7 +701,7 @@ export async function boot(): Promise<void> {
     const recent = [...sessionsState.list].sort((a, b) => activityOf(b) - activityOf(a))[0]!;
     exitSplitIfActive();
     await openSession(recent);
-  } else if (!mountRestoredCanvas()) {
+  } else if (!mountRestoredCanvas() && !chatState.threadRef) {
     newChat();
   }
 }

@@ -6,6 +6,7 @@ const read = (f: string): string => readFileSync(new URL(`../src/${f}`, import.m
 const split = read("split.ts");
 const sessions = read("sessions.ts");
 const shell = read("shell.ts");
+const chat = read("chat.ts");
 const layout = read("split-layout.ts");
 const css = read("shell.css");
 
@@ -93,4 +94,38 @@ test("the tile cap only judges dockview's own panel drags", () => {
   const bail = hold.indexOf("if (e.getData() === undefined) return;");
   assert.ok(bail > 0, "a foreign drag must be waved through");
   assert.ok(bail < hold.indexOf("dropAddsTile"), "before the tile arithmetic, not after");
+});
+
+test("boot mounts a restored canvas before it awaits the session list", () => {
+  const boot = shell.match(/export async function boot\(\): Promise<void> \{[\s\S]*?\n\}/)?.[0] ?? "";
+  assert.ok(boot, "boot not found");
+  const early = boot.indexOf("if (bareEntry && !restoredCanvasNeedsSessionList()) mountRestoredCanvas();");
+  const listAwait = boot.indexOf("await refreshSessions({ showLoading: true });");
+  assert.ok(early > 0, "boot must offer the canvas its head start");
+  assert.ok(listAwait > 0, "boot still loads the session list");
+  assert.ok(early < listAwait, "the mount must come BEFORE the list fetch the panes never read");
+
+  assert.match(boot, /const bareEntry = !viewIntent && !wantedSession && wanted !== "app-edit" && !connectedProvider;/);
+
+  assert.match(boot.slice(listAwait), /\} else if \(!mountRestoredCanvas\(\) && !chatState\.threadRef\) \{/);
+  const mount = fn(split, "mountRestoredCanvas");
+  assert.match(mount, /^ {2}if \(splitState\.active && \(dockApi\?\.panels\.length \?\? 0\) > 0\) return true;/m);
+});
+
+test("boot's fallback never replaces a chat the user mounted during the wait", () => {
+  const boot = shell.match(/export async function boot\(\): Promise<void> \{[\s\S]*?\n\}/)?.[0] ?? "";
+  const listAwait = boot.indexOf("await refreshSessions({ showLoading: true });");
+  const tail = boot.slice(listAwait);
+  assert.match(tail, /\} else if \(!mountRestoredCanvas\(\) && !chatState\.threadRef\) \{/);
+  const guard = tail.indexOf("!chatState.threadRef");
+  const mint = tail.indexOf("newChat();", guard);
+  assert.ok(guard > 0 && mint > guard, "the guard must gate the mint, not follow it");
+
+  assert.match(chat, /export function mountContinuable\(/);
+  assert.match(fn(chat, "mountContinuable"), /chatState\.threadRef = threadRef;/);
+
+  const reconcile = fn(split, "reconcileAfterClose");
+  assert.match(reconcile, /exitSplitIfActive\(\);\s*\n\s*newChat\(\);/, "a blank lone survivor mounts a new chat");
+  assert.match(reconcile, /void maximizePane\(params\);/, "a lone survivor with a session is maximized");
+  assert.match(fn(split, "exitSplitIfActive"), /splitState\.active = false;/);
 });

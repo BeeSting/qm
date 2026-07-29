@@ -87,6 +87,17 @@ function loadThreadPicks(): Map<string, ModelOptionValue> {
 let threadModelPicks = loadThreadPicks();
 let activeRuntimeConfig: RuntimeConfig | null = null;
 let runtimeRequest = 0;
+let seededRuntime: { scopeId: string | null; config: RuntimeConfig } | null = null;
+
+export function seedRuntimeConfig(scopeId: string | null, config: RuntimeConfig): void {
+  seededRuntime = { scopeId: runtimeScopeKey(scopeId), config };
+}
+
+function runtimeScopeKey(scopeId: string | null): string | null {
+  if (scopeId) return scopeId;
+  const user = appState.me?.user;
+  return user ? `personal:${user}` : null;
+}
 
 if (typeof window !== "undefined") {
   window.addEventListener("storage", (e) => {
@@ -230,6 +241,13 @@ export function currentModelOption(): ModelOption {
 
 export async function refreshRuntimeSelection(scopeId: string | null, agent?: Agent): Promise<void> {
   const request = ++runtimeRequest;
+  const scopeKey = runtimeScopeKey(scopeId);
+  const seeded = scopeKey !== null && seededRuntime?.scopeId === scopeKey ? seededRuntime.config : null;
+  seededRuntime = null;
+  if (seeded) {
+    applySelectedRuntime(seeded, agent);
+    return;
+  }
   activeRuntimeConfig = null;
   composerState.error = "";
   drawActiveChat(agent);
@@ -240,7 +258,12 @@ export async function refreshRuntimeSelection(scopeId: string | null, agent?: Ag
     drawActiveChat(agent);
     return;
   }
+  applySelectedRuntime(config, agent);
+}
+
+function applySelectedRuntime(config: RuntimeConfig, agent?: Agent): void {
   activeRuntimeConfig = config;
+  composerState.error = "";
   setFastModeModelIds(config.fastModeModelIds);
   applyRuntimeOptions(config.approvedHarnesses, config.modelsByHarness, config.effective, config.modelCatalog);
   if (agent && (!chatState.threadRef || !threadModelPicks.has(chatState.threadRef)))
@@ -301,10 +324,12 @@ export function composerForm(agent: Agent): TemplateResult {
   if (composerState.processingFiles) {
     composerNotice = html`<div class="composer-note">Preparing files...</div>`;
   } else if (!approvalPauses.length && runtimePending) {
-    composerNotice = html`<div class="composer-error">
-      ${composerState.error || "Loading runtime settings…"}
-      ${composerState.error ? html`<button type="button" @click=${() => void refreshRuntimeSelection(chatState.scopeId, agent)}>Retry</button>` : nothing}
-    </div>`;
+    composerNotice = composerState.error
+      ? html`<div class="composer-error">
+          ${composerState.error}
+          <button type="button" @click=${() => void refreshRuntimeSelection(chatState.scopeId, agent)}>Retry</button>
+        </div>`
+      : html`<div class="composer-note">Loading runtime settings…</div>`;
   } else if (composerState.error) {
     composerNotice = html`<div class="composer-error">${composerState.error}</div>`;
   }
