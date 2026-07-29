@@ -12,7 +12,6 @@ import {
   MessageSquare,
   PanelLeft,
   Plus,
-  RefreshCw,
   Rocket,
   type IconNode,
 } from "lucide";
@@ -544,42 +543,6 @@ function updateSidebarToggleLabels(): void {
     btn.setAttribute("title", collapseLabel);
     btn.setAttribute("aria-label", collapseLabel);
   });
-}
-
-export function renderPane(
-  title: string,
-  status: string,
-  onRefresh: () => void,
-  cards: unknown,
-  controls: unknown = "",
-): void {
-  if (!appState.mainEl) return;
-  const refreshLabel = `Refresh ${title.toLowerCase()}`;
-  const host = document.createElement("div");
-  host.className = "pane";
-  render(
-    html`
-      <div class="pane-head">
-        <h1 class="pane-title">${title}</h1>
-        <div class="list-page-actions">
-          ${controls}
-          <button
-            class="pane-refresh"
-            type="button"
-            aria-label=${refreshLabel}
-            title=${refreshLabel}
-            @click=${onRefresh}
-          >
-            ${icon(RefreshCw, 17)}
-          </button>
-        </div>
-      </div>
-      ${status ? html`<div class="status">${status}</div>` : ""}
-      <div class="grid">${cards}</div>
-    `,
-    host,
-  );
-  replacePanePreservingFocus(host);
 }
 
 export function replacePanePreservingFocus(host: HTMLElement): void {
