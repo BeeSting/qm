@@ -69,6 +69,14 @@ With a real model (needs one of `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `OPENR
 HARNESS=pi npm start
 ```
 
+To connect an external company-brain MCP server (an internal knowledge graph, or an
+enterprise search product like Glean), set the `BRAIN_*` variables: `BRAIN_MCP_URL`
+points at the server, `BRAIN_RO_CLIENT_ID`/`BRAIN_RO_CLIENT_SECRET` mint read-only
+OAuth tokens (or `BRAIN_AUTH=bearer` with `BRAIN_BEARER_TOKEN` for servers that use a
+static token), `BRAIN_QUERY_TOOL` names the server's search tool, and `BRAIN=mcp` with
+`BRAIN_SHARED_SOURCE` additionally routes per-scope memory through the brain. When
+configured, agents get a read-only `query_brain` tool.
+
 For durability, set `DATABASE_URL` and `SESSION_STORE=postgres` — without it, sessions
 live in process memory and vanish on restart. To exercise a branch end to end — core,
 Slack, web, admin, portal, against a real model and real Postgres — run
