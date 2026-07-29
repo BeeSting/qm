@@ -171,29 +171,29 @@ test("neutralizeMassMentions only touches the encoded broadcast forms", () => {
 test("armUserMentions: plain @name arms to <@id> via toSlackMrkdwn", () => {
   setMentionIndex(
     new Map([
-      ["ankit", "U111"],
-      ["regan", "U222"],
-      ["regan bell", "U222"],
-      ["ren", "U888"],
-      ["renée", "U999"],
+      ["alice", "U111"],
+      ["bob", "U222"],
+      ["bob stone", "U222"],
+      ["zoe", "U888"],
+      ["zoë", "U999"],
     ]),
   );
   try {
-    assert.equal(toSlackMrkdwn("thanks @ankit!"), "thanks <@U111>!");
-    assert.equal(toSlackMrkdwn("@Regan Bell said so"), "<@U222> said so");
-    assert.equal(toSlackMrkdwn("cc @regan can you look"), "cc <@U222> can you look");
+    assert.equal(toSlackMrkdwn("thanks @alice!"), "thanks <@U111>!");
+    assert.equal(toSlackMrkdwn("@Bob Stone said so"), "<@U222> said so");
+    assert.equal(toSlackMrkdwn("cc @bob can you look"), "cc <@U222> can you look");
     assert.equal(toSlackMrkdwn("ping @unknown-person"), "ping @unknown-person");
-    assert.equal(toSlackMrkdwn("email me a@ankit.com"), "email me a@ankit.com");
-    assert.equal(toSlackMrkdwn("`@ankit` and ```\n@ankit\n```"), "`@ankit` and ```\n@ankit\n```");
+    assert.equal(toSlackMrkdwn("email me a@alice.com"), "email me a@alice.com");
+    assert.equal(toSlackMrkdwn("`@alice` and ```\n@alice\n```"), "`@alice` and ```\n@alice\n```");
     assert.equal(toSlackMrkdwn("already <@U111> encoded"), "already <@U111> encoded");
-    assert.equal(toSlackMrkdwn("see https://medium.com/@ankit/post"), "see <https://medium.com/@ankit/post>");
-    assert.equal(toSlackMrkdwn("install @ankit/shared please"), "install @ankit/shared please");
-    assert.equal(toSlackMrkdwn("[ping @ankit](https://x.com)"), "<https://x.com|ping @ankit>");
-    assert.equal(toSlackMrkdwn("**@ankit** owns it"), "*<@U111>* owns it");
-    assert.equal(toSlackMrkdwn("_@ankit_ too"), "_<@U111>_ too");
-    assert.equal(toSlackMrkdwn("ping @Renée about it"), "ping <@U999> about it");
-    assert.equal(toSlackMrkdwn("hi @Ankit Gupta Sharma Rao"), "hi @Ankit Gupta Sharma Rao");
-    assert.equal(toSlackMrkdwn("hi @Ankit Torres"), "hi @Ankit Torres");
+    assert.equal(toSlackMrkdwn("see https://medium.com/@alice/post"), "see <https://medium.com/@alice/post>");
+    assert.equal(toSlackMrkdwn("install @alice/shared please"), "install @alice/shared please");
+    assert.equal(toSlackMrkdwn("[ping @alice](https://x.com)"), "<https://x.com|ping @alice>");
+    assert.equal(toSlackMrkdwn("**@alice** owns it"), "*<@U111>* owns it");
+    assert.equal(toSlackMrkdwn("_@alice_ too"), "_<@U111>_ too");
+    assert.equal(toSlackMrkdwn("ping @Zoë about it"), "ping <@U999> about it");
+    assert.equal(toSlackMrkdwn("hi @Alice Nguyen Silva Rao"), "hi @Alice Nguyen Silva Rao");
+    assert.equal(toSlackMrkdwn("hi @Alice Torres"), "hi @Alice Torres");
   } finally {
     setMentionIndex(new Map());
   }
