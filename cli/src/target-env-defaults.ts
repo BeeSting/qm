@@ -15,11 +15,22 @@ const AWS_RENDER_ENV_DEFAULTS: Readonly<Record<string, Readonly<Record<string, s
   core: { SANDBOX_BACKEND: "aws" },
 };
 
+const GCP_RENDER_ENV_DEFAULTS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  // GCP deployments run Fly Sprites sandboxes until a GCP-native substrate exists.
+  core: { SANDBOX_BACKEND: "sprites" },
+};
+
 export const TARGET_ENV_DEFAULTS: Record<Target, TargetEnvDefaults> = {
   docker: () => undefined,
   fly: (_config, service, name) => FLY_TEMPLATE_ENV_DEFAULTS[service]?.[name],
   aws: (config, service, name) => {
     const rendered = AWS_RENDER_ENV_DEFAULTS[service]?.[name];
+    if (rendered === undefined) return undefined;
+    if (name === "SANDBOX_BACKEND") return config.sandbox?.backend ?? rendered;
+    return rendered;
+  },
+  gcp: (config, service, name) => {
+    const rendered = GCP_RENDER_ENV_DEFAULTS[service]?.[name];
     if (rendered === undefined) return undefined;
     if (name === "SANDBOX_BACKEND") return config.sandbox?.backend ?? rendered;
     return rendered;

@@ -197,6 +197,7 @@ preflight and setup order:
 
 - Fly.io: `.codex/skills/deploy-qm/references/fly.md`
 - AWS: `.codex/skills/deploy-qm/references/aws.md`
+- GCP (scaffolding-only this release): `.codex/skills/deploy-qm/references/gcp.md`
 
 ## 4. Deploy and prove the web surface
 

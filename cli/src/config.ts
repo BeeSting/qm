@@ -96,6 +96,14 @@ export interface AwsConfig {
   services: Record<string, AwsServiceConfig>;
 }
 
+interface GcpConfig {
+  projectId: string;
+  region: string;
+  artifactRegistry: string;
+  secretsPrefix: string;
+  imageLabel: string;
+}
+
 export function awsWorkloadArchitecture(config: QmConfig, workload: string): "arm64" | "amd64" {
   const service = config.aws?.services[workload];
   if (!service) throw new CliError(`aws.services.${workload} is missing`);
@@ -158,6 +166,7 @@ export interface QmConfig {
   imageFrom?: string;
   deployAppPrefix?: string;
   aws?: AwsConfig;
+  gcp?: GcpConfig;
 }
 
 export function securityScreenEnv(config: Pick<QmConfig, "securityScreen">): Record<string, string> {
@@ -686,6 +695,8 @@ function validate(raw: unknown, path: string): QmConfig {
   }
   if (target === "aws" && !out.aws) throw new CliError(`${path}: target "aws" requires an "aws" block`);
   validateModelProvider(out, path);
+  if (o["gcp"] !== undefined) out.gcp = validateGcp(o["gcp"], path);
+  if (target === "gcp" && !out.gcp) throw new CliError(`${path}: target "gcp" requires a "gcp" block`);
   validatePortalTrust(out, path);
   if (target === "aws") {
     validateAwsFrontDoor(out, path);
@@ -950,6 +961,44 @@ function validatePluginSecrets(raw: unknown, path: string, pluginIndex: number):
     }
     return out;
   });
+}
+
+function validateGcp(raw: unknown, path: string): GcpConfig {
+  if (!isPlainObject(raw)) throw new CliError(`${path}: "gcp" must be an object`);
+  const requiredString = (value: unknown, field: string): string => {
+    if (typeof value !== "string" || !value.trim())
+      throw new CliError(`${path}: "gcp.${field}" must be a non-empty string`);
+    return value;
+  };
+  const projectId = requiredString(raw["projectId"], "projectId");
+  if (projectId.length < 6 || projectId.length > 30 || !/^[a-z][a-z0-9-]*[a-z0-9]$/.test(projectId)) {
+    throw new CliError(
+      `${path}: "gcp.projectId" must be a valid GCP project id (6-30 lowercase letters, digits, and hyphens, starting with a letter and not ending with a hyphen)`,
+    );
+  }
+  const region = requiredString(raw["region"], "region");
+  if (!/^[a-z]+-[a-z]+\d+$/.test(region)) {
+    throw new CliError(`${path}: "gcp.region" must be a GCP region like "us-central1"`);
+  }
+  const artifactRegistry = requiredString(raw["artifactRegistry"], "artifactRegistry");
+  if (artifactRegistry.length > 63 || !/^[a-z](?:[a-z0-9-]*[a-z0-9])?$/.test(artifactRegistry)) {
+    throw new CliError(
+      `${path}: "gcp.artifactRegistry" must be a valid Artifact Registry repository name (at most 63 lowercase letters, digits, and interior hyphens)`,
+    );
+  }
+  const secretsPrefix = requiredString(raw["secretsPrefix"], "secretsPrefix");
+  if (secretsPrefix.length > 200 || !/^[A-Za-z0-9_-]+$/.test(secretsPrefix)) {
+    throw new CliError(
+      `${path}: "gcp.secretsPrefix" must be at most 200 Secret Manager name characters (letters, digits, hyphens, underscores) so computed secret names fit`,
+    );
+  }
+  const imageLabel = requiredString(raw["imageLabel"], "imageLabel");
+  if (!/^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/.test(imageLabel)) {
+    throw new CliError(
+      `${path}: "gcp.imageLabel" must be a valid OCI tag (1-128 letters, digits, underscores, periods, or hyphens; the first character cannot be a period or hyphen)`,
+    );
+  }
+  return { projectId, region, artifactRegistry, secretsPrefix, imageLabel };
 }
 
 function validateAws(

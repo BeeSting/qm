@@ -1,4 +1,4 @@
-export const HOSTING_PROVIDER_IDS = ["docker", "fly", "aws"] as const;
+export const HOSTING_PROVIDER_IDS = ["docker", "fly", "aws", "gcp"] as const;
 
 export type Target = (typeof HOSTING_PROVIDER_IDS)[number];
 
@@ -19,6 +19,9 @@ export const SANDBOX_BACKEND_POLICY: Record<Target, SandboxBackendPolicy> = {
   docker: { allowed: ["sprites"], requireExplicit: false },
   fly: { allowed: ["sprites"], requireExplicit: false },
   aws: { allowed: ["sprites", "aws"], requireExplicit: true },
+  // GCP has no native sandbox substrate yet; deployments run Fly Sprites sandboxes
+  // (the documented interim) until a GCE-backed SandboxProvider lands.
+  gcp: { allowed: ["sprites"], requireExplicit: false },
 };
 
 export const targetsAllowingSandboxBackend = (backend: SandboxBackendId): Target[] =>

@@ -163,7 +163,7 @@ ${bold("DEVELOP (contributor)")} ${dim("— runs in the QM repo")}
 
   help · version
 
-${dim("target is set in the config: docker runs local containers, fly deploys Fly apps, and aws deploys ECS.")}
+${dim("target is set in the config: docker runs local containers, fly deploys Fly apps, aws deploys ECS, and gcp (scaffolding-only) will deploy Cloud Run.")}
 ${dim("status/logs/down act on the configured target. Fly uses Fly Machines; AWS uses Lambda MicroVMs.")}
 `;
 

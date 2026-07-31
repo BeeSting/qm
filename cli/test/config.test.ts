@@ -1194,3 +1194,31 @@ test("a mock deployment is named as one, and a real harness draws no warning", (
     assert.equal(mockHarnessWarning(loadConfigAt(path).config), undefined, "the fly template renders HARNESS=pi");
   });
 });
+
+test("the gcp block is validated and required for target gcp", () => {
+  const gcp = {
+    projectId: "acme-prod",
+    region: "us-central1",
+    artifactRegistry: "acme-qm",
+    secretsPrefix: "acme-qm-",
+    imageLabel: "latest",
+  };
+  withConfig({ target: "gcp", gcp, sandbox: { app: "acme-sandboxes" } }, ({ path }) => {
+    assert.deepEqual(loadConfigAt(path).config.gcp, gcp);
+  });
+  withConfig({ target: "gcp", sandbox: { app: "acme-sandboxes" } }, ({ path }) => {
+    assert.throws(() => loadConfigAt(path), /target "gcp" requires a "gcp" block/);
+  });
+  withConfig(
+    { target: "gcp", gcp: { ...gcp, projectId: "Bad_Project" }, sandbox: { app: "acme-sandboxes" } },
+    ({ path }) => {
+      assert.throws(() => loadConfigAt(path), /"gcp.projectId" must be a valid GCP project id/);
+    },
+  );
+  withConfig({ target: "gcp", gcp: { ...gcp, region: "nowhere" }, sandbox: { app: "acme-sandboxes" } }, ({ path }) => {
+    assert.throws(() => loadConfigAt(path), /"gcp.region" must be a GCP region/);
+  });
+  withConfig({ target: "gcp", gcp, sandbox: { backend: "aws", app: "acme-sandboxes" } }, ({ path }) => {
+    assert.throws(() => loadConfigAt(path), /"sandbox.backend": "aws".*requires target "aws"/);
+  });
+});

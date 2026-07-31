@@ -6,7 +6,7 @@ import { TARGET_ENV_DEFAULTS, type TargetEnvDefaults } from "../target-env-defau
 import { renderTerraformVars } from "../terraform.ts";
 import { buildAwsMicrovmImage, deleteAwsMicrovmImage, deleteAwsTaskDefinitions } from "../commands/infra.ts";
 import { runSandboxPublish, type SandboxPublishOpts } from "../commands/sandbox.ts";
-import { awsScaffold, dockerScaffold, flyScaffold, type ProviderScaffold } from "../provider-scaffold.ts";
+import { awsScaffold, dockerScaffold, flyScaffold, gcpScaffold, type ProviderScaffold } from "../provider-scaffold.ts";
 import type { ResolvedPlugin } from "../plugins.ts";
 import { runnableServices } from "../services.ts";
 import {
@@ -23,6 +23,7 @@ import {
   awsDeploymentLayerTransport,
 } from "./aws.ts";
 import { dockerDeploymentLayerTransport, dockerDown, dockerLogs, dockerStatus, dockerUp } from "./docker.ts";
+import { createGcpBackend, gcpDeploymentLayerTransport } from "./gcp.ts";
 import { doctorCommon, localDoctorSecrets } from "./doctor.ts";
 import {
   flyCheckLive,
@@ -364,7 +365,40 @@ const aws: HostingProvider = {
   },
 };
 
-export const HOSTING_PROVIDERS = { docker, fly, aws } satisfies Record<Target, HostingProvider>;
+const gcp: HostingProvider = {
+  id: "gcp",
+  deploymentLayerTransport: gcpDeploymentLayerTransport,
+  envDefaults: TARGET_ENV_DEFAULTS.gcp,
+  scaffold: gcpScaffold,
+  upFlags: [],
+  upOptions: (_ctx, _flags, dryRun) => ({ dryRun }),
+  createBackend: (ctx) => createGcpBackend(ctx),
+  coordinates: (config) =>
+    config.gcp ? { accountOrOrganization: config.gcp.projectId, region: config.gcp.region } : {},
+  // GCP runs the Fly Sprites sandbox interim, so it needs an operator-published layer image.
+  requiresSandboxApp: true,
+  publishSandbox: (ctx, opts) => publishFlySandbox(ctx, opts, false),
+  validateConfig: (config) => {
+    const errors: Array<{ clause: string; message: string }> = [...sandboxImagePinErrors(config)];
+    const core = config.env.core ?? {};
+    if (core.SNAPSHOT_STORE !== "s3" || core.TRANSFER_STORE !== "s3") {
+      errors.push({
+        clause: "config.v1",
+        message:
+          'contract config.gcp.durability: a GCP deployment requires env.core.SNAPSHOT_STORE and TRANSFER_STORE to be "s3" (GCS via S3 interoperability)',
+      });
+    }
+    if (!core.S3_BUCKET?.trim() || !core.S3_REGION?.trim()) {
+      errors.push({
+        clause: "config.v1",
+        message: "contract config.gcp.durability: a GCP deployment requires env.core.S3_BUCKET and S3_REGION",
+      });
+    }
+    return errors;
+  },
+};
+
+export const HOSTING_PROVIDERS = { docker, fly, aws, gcp } satisfies Record<Target, HostingProvider>;
 
 export const hostingProvider = (target: Target): HostingProvider => HOSTING_PROVIDERS[target];
 

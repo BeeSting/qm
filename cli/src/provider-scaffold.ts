@@ -203,6 +203,51 @@ export const flyScaffold: ProviderScaffold = {
   finalWhy: "pull images, start services, print URLs",
 };
 
+export const gcpScaffold: ProviderScaffold = {
+  renderConfig: (orgId) =>
+    renderConfig(orgId, {
+      target: "gcp",
+      publicUrl: `https://${orgId}.example.com`,
+      providerFields: `
+  // GCP coordinates. Replace the project id and public URL before deploying.
+  // imageLabel identifies the deployment manifest used by rollback and live checks.
+  "gcp": {
+    "projectId": "replace-with-project-id",
+    "region": "us-central1",
+    "artifactRegistry": ${JSON.stringify(`${orgId}-qm`)},
+    "secretsPrefix": ${JSON.stringify(`${orgId}-qm-`)},
+    "imageLabel": "latest"
+  },
+`,
+      services: ["core", "slack", "web-ui", "admin", "portal", "auth"],
+      env: `{ "core": { "HARNESS": "pi", "SNAPSHOT_STORE": "s3", "TRANSFER_STORE": "s3", "S3_BUCKET": ${JSON.stringify(`${orgId}-data`)}, "S3_REGION": "auto" }, "slack": { "SLACK_IDENTITY_EMAIL": "1" }, "auth": { "AUTH_EMAIL_TRANSPORT": "resend" } }`,
+      secretEnv: `,
+
+  // The initial admin seed is kept in the provider secret store, never in config.
+  "secretEnv": { "core": { "ADMIN_GRANTS": "ADMIN_GRANTS" } },`,
+      sandbox: `
+
+  // Where agent sandboxes execute. GCP has no native sandbox substrate yet, so
+  // deployments run Fly Sprites sandboxes (the documented interim): the Fly app
+  // agents execute in, booting the immutable image from \`qm sandbox publish\`.
+  "sandbox": { "app": ${JSON.stringify(`${orgId}-sandboxes`)} }`,
+    }),
+  ignores: [".env", "node_modules/", ".generated/"],
+  agentsAppendix: `
+## Bootstrapping the GCP target
+
+The GCP target is scaffolding-only in this release: the config block, checks,
+and this deployment repository are live, while the Cloud Run deploy path and
+the Terraform module behind \`qm infra\` land in a following release. Until
+then, fill in the "gcp" block, keep sandboxes on the Fly Sprites interim
+("sandbox.app"), and use \`qm check\` to validate the repository.
+`,
+  files: noFiles,
+  configurationHint: "gcp: fill projectId, region, public URL, and the Fly sandbox app before setup",
+  finalCommand: "npm exec qm -- check",
+  finalWhy: "validate the repository; the gcp deploy path lands in a following release",
+};
+
 export const awsScaffold: ProviderScaffold = {
   renderConfig: (orgId, modelProvider, emailTransport) => {
     const cluster = clusterName(orgId);

@@ -569,3 +569,38 @@ test("the scaffold is an npm-backed deployment repository with no CI coupling an
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("init --target gcp scaffolds the hosted topology with a gcp block and the Sprites sandbox interim", () => {
+  const dir = mkdtempSync(join(tmpdir(), "qm-init-gcp-"));
+  try {
+    quiet(() => runInit({ dir, org: "acme", target: "gcp" }));
+    const { config } = loadConfigInDir(dir);
+    assert.equal(config.target, "gcp");
+    assert.deepEqual(config.services, ["core", "slack", "web-ui", "admin", "portal", "auth"]);
+    assert.deepEqual(config.gcp, {
+      projectId: "replace-with-project-id",
+      region: "us-central1",
+      artifactRegistry: "acme-qm",
+      secretsPrefix: "acme-qm-",
+      imageLabel: "latest",
+    });
+    assert.equal(config.sandbox?.app, "acme-sandboxes", "gcp runs the Fly Sprites sandbox interim");
+    assert.deepEqual(
+      {
+        SNAPSHOT_STORE: config.env.core?.SNAPSHOT_STORE,
+        TRANSFER_STORE: config.env.core?.TRANSFER_STORE,
+        S3_BUCKET: config.env.core?.S3_BUCKET,
+        S3_REGION: config.env.core?.S3_REGION,
+      },
+      { SNAPSHOT_STORE: "s3", TRANSFER_STORE: "s3", S3_BUCKET: "acme-data", S3_REGION: "auto" },
+      "durability rides GCS S3 interoperability",
+    );
+    assert.deepEqual(config.secretEnv?.core, { ADMIN_GRANTS: "ADMIN_GRANTS" });
+    assert.ok(
+      existsSync(join(dir, ".codex", "skills", "deploy-qm", "references", "gcp.md")),
+      "the gcp provider reference is scaffolded",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
