@@ -122,6 +122,19 @@ test("harness-only turn controls are exposed only where the adapter supports the
   assert.equal(harnessSupportsFastMode("opencode"), false);
 });
 
+test("a harness the org allowlist empties contributes no options instead of the built-in set", () => {
+  applyRuntimeOptions(
+    ["pi", "codex"],
+    { pi: ["claude-fable-5"], codex: [] },
+    { harnessId: "pi", modelId: "claude-fable-5" },
+  );
+  assert.deepEqual(getModelOptionsForHarness("codex"), []);
+  assert.deepEqual(
+    getModelOptionsForHarness("pi").map((o) => o.value),
+    ["pi:claude-fable-5"],
+  );
+});
+
 test("an all-retired list falls back within the approved harness", () => {
   applyRuntimeOptions(["codex"], { codex: ["gpt-5.5"] }, { harnessId: "codex", modelId: "gpt-5.5" });
   assert.deepEqual(getHarnessOptions(), [{ value: "codex", label: "Codex" }]);

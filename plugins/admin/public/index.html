@@ -6326,6 +6326,7 @@
           webuiModelIds = [...configured];
           const chips = $("webui-models-chips");
           const addInput = $("webui-models-add");
+          const markDirty = () => addInput.dispatchEvent(new Event("input", { bubbles: true }));
           const syncDefault = () => {
             const dsel = $("webui-models-default");
             const prev = dsel.value;
@@ -6357,6 +6358,7 @@
                 webuiModelIds = webuiModelIds.filter((v) => v !== id);
                 renderChips();
                 syncDefault();
+                markDirty();
               };
               chip.appendChild(label);
               chip.appendChild(x);
@@ -6382,6 +6384,7 @@
             addInput.value = "";
             renderChips();
             syncDefault();
+            markDirty();
           };
           addInput.onchange = addModel;
           addInput.onkeydown = (e) => {

@@ -875,6 +875,7 @@ export function createMemoryConfigStore(
         brandingRow,
         orgAmbientRow,
         interactiveFastModeRow,
+        webuiModelsRow,
       ] = await Promise.all([
         soulStore.get(id),
         commandPolicyStore.get(id),
@@ -888,6 +889,7 @@ export function createMemoryConfigStore(
         brandingStore.get(id),
         id === org ? orgAmbientStore.get(org) : null,
         id === org ? interactiveFastModeStore.get(org) : null,
+        webuiModelStore.get(id),
       ]);
       let refreshedSoul = soul;
       const legacyHistory = legacySoulHistory.get(id) ?? [];
@@ -926,6 +928,8 @@ export function createMemoryConfigStore(
       if (id === org) approvedHarnesses = approved?.ids ?? null;
       if (id === org) orgAmbient = orgAmbientRow?.on ?? true;
       if (id === org) interactiveFastMode = interactiveFastModeRow?.on ?? false;
+      if (webuiModelsRow) webuiModels.set(id, webuiModelsRow.ids);
+      else webuiModels.delete(id);
       if (brandingRow) branding.set(id, brandingRow.branding);
       else branding.delete(id);
     },
@@ -940,6 +944,7 @@ export function createMemoryConfigStore(
         `model:${id}`,
         `turnWallClock:${id}`,
         `branding:${id}`,
+        `webuiModels:${id}`,
         ...(id === org ? [`approvedHarnesses:${org}`, `orgAmbient:${org}`, `interactiveFastMode:${org}`] : []),
       ];
       await Promise.all(

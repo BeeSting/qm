@@ -100,13 +100,16 @@ export async function selectableModelCatalog(fetcher: typeof fetch = fetch): Pro
   return entry.inFlight;
 }
 
+export function modelSelectableForHarness(id: string, harness: string): boolean {
+  return (
+    (resolveModel(id)?.provider !== "openrouter" || harness === "pi" || harness === "mock") &&
+    modelSupportedByHarness(id, harness)
+  );
+}
+
 export function selectableCatalogForHarness(
   catalog: readonly ModelCatalogEntry[],
   harness: string,
 ): ModelCatalogEntry[] {
-  return catalog.filter(
-    (model) =>
-      (model.provider !== "openrouter" || harness === "pi" || harness === "mock") &&
-      modelSupportedByHarness(model.id, harness),
-  );
+  return catalog.filter((model) => modelSelectableForHarness(model.id, harness));
 }

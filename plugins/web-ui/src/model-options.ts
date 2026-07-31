@@ -144,7 +144,9 @@ export function applyRuntimeOptions(
   catalog: Readonly<Record<string, { name: string; provider: string }>> = {},
 ): void {
   activeModelOptions = approvedHarnesses.flatMap((harnessId) => {
-    const configured = buildOptions(modelsByHarness[harnessId] ?? [], harnessId, true, catalog);
+    const ids = modelsByHarness[harnessId];
+    if (ids && ids.length === 0) return [];
+    const configured = buildOptions(ids ?? [], harnessId, true, catalog);
     return configured.length
       ? configured
       : buildOptions(defaultModelIdsForHarness(harnessId), harnessId, true, catalog);

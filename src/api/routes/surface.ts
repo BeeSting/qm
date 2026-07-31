@@ -13,7 +13,12 @@ import {
   FAST_MODE_MODEL_IDS,
   type HarnessId,
 } from "../../model/pi-models.ts";
-import { builtInModelCatalog, selectableCatalogForHarness, selectableModelCatalog } from "../../model/model-catalog.ts";
+import {
+  builtInModelCatalog,
+  modelSelectableForHarness,
+  selectableCatalogForHarness,
+  selectableModelCatalog,
+} from "../../model/model-catalog.ts";
 import { errMessage } from "../../util/errors.ts";
 import { renderAgentApis } from "../agent-api-catalog.ts";
 import { mintCapabilityToken, CAPABILITY_TTL_MS } from "../../auth/capability-token.ts";
@@ -975,7 +980,7 @@ async function runtimeConfigBody(ctx: ApiCtx, scope: ScopeId): Promise<Record<st
   const modelsByHarness = Object.fromEntries(
     approvedHarnesses.map((harnessId) => {
       const ids = allowlist?.length
-        ? allowlist.filter((id) => modelSupportedByHarness(id, harnessId))
+        ? allowlist.filter((id) => modelSelectableForHarness(id, harnessId))
         : selectableCatalogForHarness(catalog, harnessId).map((model) => model.id);
       for (const choice of selected) {
         if (

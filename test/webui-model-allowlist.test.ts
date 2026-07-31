@@ -38,11 +38,12 @@ test("the org allowed-models list restricts the runtime-config picker and cleari
   });
   server.listen(0);
   const base = `http://localhost:${(server.address() as AddressInfo).port}`;
-  const runtimeModels = async (): Promise<string[]> => {
+  const runtimeModelsByHarness = async (): Promise<Record<string, string[]>> => {
     const response = await fetch(`${base}/v1/runtime-config?principalId=alice&scopeId=personal%3Aalice`);
     assert.equal(response.status, 200);
-    return ((await response.json()) as { modelsByHarness: Record<string, string[]> }).modelsByHarness.pi!;
+    return ((await response.json()) as { modelsByHarness: Record<string, string[]> }).modelsByHarness;
   };
+  const runtimeModels = async (): Promise<string[]> => (await runtimeModelsByHarness()).pi!;
   try {
     const unrestricted = await runtimeModels();
     assert.ok(unrestricted.includes("anthropic/claude-sonnet-4.5"));
@@ -56,6 +57,13 @@ test("the org allowed-models list restricts the runtime-config picker and cleari
     assert.equal(saved.status, 200);
 
     assert.deepEqual(await runtimeModels(), ["deepseek/deepseek-chat-v3.1", "openrouter/auto"]);
+
+    built.config.setApprovedHarnesses(["pi", "codex"]);
+    built.config.setWebuiModels("org:default-org", ["deepseek/deepseek-chat-v3.1", "openai/gpt-5.6-luna"]);
+    await built.config.flushScope("org:default-org");
+    const byHarness = await runtimeModelsByHarness();
+    assert.deepEqual(byHarness.pi, ["deepseek/deepseek-chat-v3.1", "openai/gpt-5.6-luna"]);
+    assert.ok(!byHarness.codex!.includes("openai/gpt-5.6-luna"));
 
     const cleared = await fetch(`${base}/v1/admin/scopes/org%3Adefault-org/webui-models`, {
       method: "PUT",
