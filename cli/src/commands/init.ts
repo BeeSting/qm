@@ -246,7 +246,13 @@ function scaffoldDeploymentSkill(dir: string): void {
     ["deployment.md"],
     [".codex", "skills", "deploy-qm", "SKILL.md"],
     [".codex", "skills", "deploy-qm", "agents", "openai.yaml"],
-    ...["fly", "aws", "gcp", "slack", "email"].map((name) => [".codex", "skills", "deploy-qm", "references", `${name}.md`]),
+    ...["fly", "aws", "gcp", "slack", "email"].map((name) => [
+      ".codex",
+      "skills",
+      "deploy-qm",
+      "references",
+      `${name}.md`,
+    ]),
   ];
   for (const segments of files) {
     const source =
