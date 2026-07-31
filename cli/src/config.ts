@@ -96,7 +96,7 @@ export interface AwsConfig {
   services: Record<string, AwsServiceConfig>;
 }
 
-interface GcpConfig {
+export interface GcpConfig {
   projectId: string;
   region: string;
   artifactRegistry: string;

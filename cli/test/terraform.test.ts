@@ -1,7 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { awsObjectStoreBucket, declaredVariables, terraformVars, terraformVarsDrift } from "../src/terraform.ts";
+import {
+  awsObjectStoreBucket,
+  declaredVariables,
+  gcpTerraformVars,
+  terraformVars,
+  terraformVarsDrift,
+} from "../src/terraform.ts";
 import type { QmConfig } from "../src/config.ts";
 
 const DEPLOY_IMAGE = "acme-qm-sandbox";
@@ -32,6 +38,25 @@ const config: QmConfig = {
 
 const declared = declaredVariables(readFileSync(new URL("../templates/aws/variables.tf", import.meta.url), "utf8"));
 const mainTf = readFileSync(new URL("../templates/aws/main.tf", import.meta.url), "utf8");
+
+test("GCP tfvars contain only deployment-derived coordinates", () => {
+  const rendered = gcpTerraformVars({
+    ...config,
+    target: "gcp",
+    aws: undefined,
+    gcp: {
+      projectId: "acme-project",
+      region: "us-central1",
+      artifactRegistry: "acme-qm",
+      secretsPrefix: "acme-qm-",
+      imageLabel: "release",
+    },
+  });
+  assert.equal(
+    rendered,
+    'project_id        = "acme-project"\nregion            = "us-central1"\norg_id            = "acme"\nartifact_registry = "acme-qm"\nsecrets_prefix    = "acme-qm-"\n',
+  );
+});
 
 test("declaredVariables reads the scaffolded variables.tf", () => {
   for (const name of [

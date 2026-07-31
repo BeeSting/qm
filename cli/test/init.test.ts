@@ -385,7 +385,7 @@ test("init refuses to generate keys into an absent but Git-tracked .env", () => 
   try {
     execFileSync("git", ["init"], { cwd: dir, stdio: "ignore" });
     writeFileSync(join(dir, ".env"), "previous=value\n");
-    execFileSync("git", ["add", ".env"], { cwd: dir, stdio: "ignore" });
+    execFileSync("git", ["add", "-f", ".env"], { cwd: dir, stdio: "ignore" });
     rmSync(join(dir, ".env"));
     assert.throws(() => quiet(() => runInit({ dir, org: "acme" })), /tracked by Git/);
     assert.ok(!existsSync(join(dir, CONFIG_FILENAME)), "init refuses before writing the scaffold");
@@ -399,7 +399,7 @@ test("init refuses a present tracked .env before writing the scaffold", () => {
   try {
     execFileSync("git", ["init"], { cwd: dir, stdio: "ignore" });
     writeFileSync(join(dir, ".env"), "previous=value\n");
-    execFileSync("git", ["add", ".env"], { cwd: dir, stdio: "ignore" });
+    execFileSync("git", ["add", "-f", ".env"], { cwd: dir, stdio: "ignore" });
     assert.throws(() => quiet(() => runInit({ dir, org: "acme" })), /tracked by Git/);
     assert.ok(!existsSync(join(dir, CONFIG_FILENAME)), "init refuses before writing the scaffold");
   } finally {
@@ -592,7 +592,7 @@ test("init --target gcp scaffolds the hosted topology with a gcp block and the S
         S3_BUCKET: config.env.core?.S3_BUCKET,
         S3_REGION: config.env.core?.S3_REGION,
       },
-      { SNAPSHOT_STORE: "s3", TRANSFER_STORE: "s3", S3_BUCKET: "acme-data", S3_REGION: "auto" },
+      { SNAPSHOT_STORE: "s3", TRANSFER_STORE: "s3", S3_BUCKET: undefined, S3_REGION: undefined },
       "durability rides GCS S3 interoperability",
     );
     assert.deepEqual(config.secretEnv?.core, { ADMIN_GRANTS: "ADMIN_GRANTS" });
@@ -600,6 +600,19 @@ test("init --target gcp scaffolds the hosted topology with a gcp block and the S
       existsSync(join(dir, ".codex", "skills", "deploy-qm", "references", "gcp.md")),
       "the gcp provider reference is scaffolded",
     );
+    for (const file of ["main.tf", "outputs.tf", "variables.tf", "versions.tf", "terraform.tfvars"]) {
+      assert.ok(existsSync(join(dir, "infra", file)), `the GCP scaffold includes infra/${file}`);
+    }
+    assert.match(
+      readFileSync(join(dir, "infra", "terraform.tfvars"), "utf8"),
+      /project_id\s+= "replace-with-project-id"/,
+    );
+    const agents = readFileSync(join(dir, "AGENTS.md"), "utf8");
+    assert.match(agents, /terraform -chdir=infra init/);
+    assert.match(agents, /npm exec qm -- secrets push/);
+    const ignores = readFileSync(join(dir, ".gitignore"), "utf8");
+    assert.match(ignores, /infra\/\.terraform\//);
+    assert.match(ignores, /infra\/\*\.tfstate/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

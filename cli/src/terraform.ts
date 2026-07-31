@@ -154,6 +154,21 @@ export function terraformVars(
   return lines.join("\n");
 }
 
+export function gcpTerraformVars(config: QmConfig): string {
+  if (!config.gcp) throw new CliError("terraform rendering requires target gcp and a gcp block");
+  const values: Record<string, string> = {
+    project_id: config.gcp.projectId,
+    region: config.gcp.region,
+    org_id: config.orgId,
+    artifact_registry: config.gcp.artifactRegistry,
+    secrets_prefix: config.gcp.secretsPrefix,
+  };
+  const width = Math.max(...Object.keys(values).map((name) => name.length));
+  return `${Object.entries(values)
+    .map(([name, value]) => `${name.padEnd(width)} = ${JSON.stringify(value)}`)
+    .join("\n")}\n`;
+}
+
 export function terraformVarsDrift(
   config: QmConfig,
   existing: string,
@@ -186,8 +201,12 @@ function declaredInDir(configDir: string): string[] | undefined {
 export function renderTerraformVars(config: QmConfig, configDir: string): void {
   const path = join(configDir, "infra", "terraform.tfvars");
   if (!existsSync(path)) throw new CliError(`${path} does not exist; scaffold it with qm init --target aws`);
-  const existing = readFileSync(path, "utf8");
-  const declared = declaredInDir(configDir);
-  writeFileSync(path, terraformVars(config, existing, ...(declared ? [declared] : [])));
+  if (config.target === "gcp") {
+    writeFileSync(path, gcpTerraformVars(config));
+  } else {
+    const existing = readFileSync(path, "utf8");
+    const declared = declaredInDir(configDir);
+    writeFileSync(path, terraformVars(config, existing, ...(declared ? [declared] : [])));
+  }
   ok("rendered infra/terraform.tfvars from the QM deployment config");
 }

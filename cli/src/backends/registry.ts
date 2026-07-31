@@ -369,6 +369,7 @@ const gcp: HostingProvider = {
   id: "gcp",
   deploymentLayerTransport: gcpDeploymentLayerTransport,
   envDefaults: TARGET_ENV_DEFAULTS.gcp,
+  infra: { render: (ctx) => renderTerraformVars(ctx.config, ctx.configDir) },
   scaffold: gcpScaffold,
   upFlags: [],
   upOptions: (_ctx, _flags, dryRun) => ({ dryRun }),

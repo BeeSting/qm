@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import type { EmailTransport, ModelProvider, QmConfig } from "./config.ts";
 import type { Target } from "./providers.ts";
-import { declaredVariables, terraformVars } from "./terraform.ts";
+import { declaredVariables, gcpTerraformVars, terraformVars } from "./terraform.ts";
 
 interface ScaffoldFile {
   segments: string[];
@@ -221,7 +221,7 @@ export const gcpScaffold: ProviderScaffold = {
   },
 `,
       services: ["core", "slack", "web-ui", "admin", "portal", "auth"],
-      env: `{ "core": { "HARNESS": "pi", "SNAPSHOT_STORE": "s3", "TRANSFER_STORE": "s3", "S3_BUCKET": ${JSON.stringify(`${orgId}-data`)}, "S3_REGION": "auto" }, "slack": { "SLACK_IDENTITY_EMAIL": "1" }, "auth": { "AUTH_EMAIL_TRANSPORT": ${JSON.stringify(emailTransport)} } }`,
+      env: `{ "core": { "HARNESS": "pi", "SNAPSHOT_STORE": "s3", "TRANSFER_STORE": "s3" }, "slack": { "SLACK_IDENTITY_EMAIL": "1" }, "auth": { "AUTH_EMAIL_TRANSPORT": ${JSON.stringify(emailTransport)} } }`,
       secretEnv: `,
 
   // The initial admin seed is kept in the provider secret store, never in config.
@@ -233,20 +233,45 @@ export const gcpScaffold: ProviderScaffold = {
   // agents execute in, booting the immutable image from \`qm sandbox publish\`.
   "sandbox": { "app": ${JSON.stringify(`${orgId}-sandboxes`)} }`,
     }),
-  ignores: [".env", "node_modules/", ".generated/"],
+  ignores: [
+    ".env",
+    "node_modules/",
+    ".generated/",
+    "infra/.terraform/",
+    "infra/*.tfstate",
+    "infra/*.tfstate.*",
+    "infra/crash.log",
+    "infra/*.tfplan",
+  ],
   agentsAppendix: `
 ## Bootstrapping the GCP target
 
-The GCP target is scaffolding-only in this release: the config block, checks,
-and this deployment repository are live, while the Cloud Run deploy path and
-the Terraform module behind \`qm infra\` land in a following release. Until
-then, fill in the "gcp" block, keep sandboxes on the Fly Sprites interim
-("sandbox.app"), and use \`qm check\` to validate the repository.
+1. Create a GCP project with billing enabled, install Terraform and the gcloud
+   CLI, authenticate with \`gcloud auth login\`, and select the project with
+   \`gcloud config set project <project-id>\`.
+2. Fill in the "gcp" block and public URL, run \`npm exec qm -- infra render\`,
+   then run \`terraform -chdir=infra init && terraform -chdir=infra apply\`.
+   Terraform enables the APIs and creates Artifact Registry, Cloud SQL, Secret
+   Manager secrets, the runtime service account, and the GCS transfer bucket.
+3. Run \`npm exec qm -- setup\`, fill the gitignored \`.env\`, and upload it with
+   \`npm exec qm -- secrets push\`.
+4. Publish the Fly Sprites sandbox with \`npm exec qm -- sandbox publish\`, then
+   run \`npm exec qm -- doctor\`, \`npm exec qm -- up\`, and
+   \`npm exec qm -- check --live\`.
+
+Run \`npm exec qm -- down\` to remove Cloud Run services. Infrastructure remains
+until \`terraform -chdir=infra destroy\` is run explicitly.
 `,
-  files: noFiles,
+  files: (config) => [
+    ...["main.tf", "outputs.tf", "variables.tf", "versions.tf"].map((name) => ({
+      segments: ["infra", name],
+      content: template(`gcp/${name}`),
+    })),
+    { segments: ["infra", "terraform.tfvars"], content: gcpTerraformVars(config) },
+  ],
   configurationHint: "gcp: fill projectId, region, public URL, and the Fly sandbox app before setup",
-  finalCommand: "npm exec qm -- check",
-  finalWhy: "validate the repository; the gcp deploy path lands in a following release",
+  finalCommand: "terraform -chdir=infra init && terraform -chdir=infra apply",
+  finalWhy: "create the GCP infrastructure before uploading secrets and deploying",
 };
 
 export const awsScaffold: ProviderScaffold = {

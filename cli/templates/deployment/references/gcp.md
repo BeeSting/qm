@@ -2,26 +2,7 @@
 
 Use this after the choices and billing confirmation in `deployment.md`.
 
-## Status
-
-The GCP target is scaffolding-only in this release. What works today:
-
-- `qm init --target gcp` scaffolds a deployment repository with a `gcp`
-  config block (project, region, Artifact Registry repository, Secret
-  Manager prefix, image label).
-- `qm check` validates the repository, including the GCP durability
-  contract (object storage over GCS S3 interoperability) and the sandbox
-  configuration.
-- `qm sandbox publish` publishes the agent-computer layer image to the Fly
-  sandbox app — GCP deployments run Fly Sprites sandboxes as the documented
-  interim until a GCP-native sandbox substrate exists.
-
-The deploy path — Cloud Run services for `qm up`/`status`/`logs`/`down`,
-native-revision rollback, Secret Manager pushes, and the Terraform module
-behind `qm infra` — lands in a following release. Until then `qm up` and its
-siblings fail with an explicit message on this target.
-
-## Intended shape (for planning)
+## Architecture
 
 | Need                      | GCP service                                                                       |
 | ------------------------- | --------------------------------------------------------------------------------- |
@@ -33,20 +14,29 @@ siblings fail with an explicit message on this target.
 | Images                    | Artifact Registry                                                                 |
 | Agent sandboxes           | Fly Sprites (interim); GCE-backed substrate planned                               |
 
-## Preflight (what you can prepare now)
+## Bootstrap
 
 ```bash
 gcloud auth list
 gcloud projects describe <project-id>
-gcloud services enable run.googleapis.com sqladmin.googleapis.com \
-  secretmanager.googleapis.com artifactregistry.googleapis.com
+npm exec qm -- infra render
+terraform -chdir=infra init
+terraform -chdir=infra apply
 ```
 
-Fill the `gcp` block in the config, set `publicUrl` to the domain that will
-front the Cloud Run core, create the Fly sandbox app named in
-`sandbox.app`, and run:
+Terraform enables the required APIs and creates Artifact Registry, Cloud SQL,
+the runtime service account, the GCS bucket and HMAC credentials, and managed
+secrets. Set `publicUrl` to the custom domain that fronts core, then run:
 
 ```bash
+npm exec qm -- setup
+npm exec qm -- secrets push
 npm exec qm -- sandbox publish
-npm exec qm -- check
+npm exec qm -- doctor
+npm exec qm -- up
+npm exec qm -- check --live
 ```
+
+`qm status` shows Cloud Run readiness and revisions, `qm logs` reads Cloud
+Logging, `qm rollback --to <revision>` moves traffic to a prior revision, and
+`qm down` removes the Cloud Run services while leaving Terraform infrastructure.
