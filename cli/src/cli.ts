@@ -145,7 +145,8 @@ ${bold("DEPLOY (operator)")} ${dim("— runs in the deployment directory")}
   logs [<service>] [-f] [--tail <n>]       tail service logs (omit <service> for all, interleaved)
   down [--purge]                           stop the deployment (--purge drops docker volumes)
   rollback [--to <target>]                 roll back workloads (AWS: prior deployment manifest,
-                                           or manifest id/release label; Fly: sandbox image/tag)
+                                           or manifest id/release label; Fly: sandbox image/tag;
+                                           GCP: Cloud Run revision)
   sandbox build [--from <img>] [--tag <t>] [--dry-run]
                                            build and validate the sandbox image locally
   sandbox publish [--from <img>] [--app <registry/repo>] [--tag <t>] [--dry-run]
@@ -163,7 +164,7 @@ ${bold("DEVELOP (contributor)")} ${dim("— runs in the QM repo")}
 
   help · version
 
-${dim("target is set in the config: docker runs local containers, fly deploys Fly apps, aws deploys ECS, and gcp (scaffolding-only) will deploy Cloud Run.")}
+${dim("target is set in the config: docker runs local containers, fly deploys Fly apps, aws deploys ECS, and gcp deploys Cloud Run.")}
 ${dim("status/logs/down act on the configured target. Fly uses Fly Machines; AWS uses Lambda MicroVMs.")}
 `;
 

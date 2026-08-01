@@ -371,8 +371,15 @@ const gcp: HostingProvider = {
   envDefaults: TARGET_ENV_DEFAULTS.gcp,
   infra: { render: (ctx) => renderTerraformVars(ctx.config, ctx.configDir) },
   scaffold: gcpScaffold,
-  upFlags: [],
-  upOptions: (_ctx, _flags, dryRun) => ({ dryRun }),
+  upFlags: ["build-from", "image-label"],
+  upOptions: (ctx, flags, dryRun) => {
+    const imageLabel = stringFlag(flags, "image-label");
+    return {
+      dryRun,
+      ...buildFromOptions(flags),
+      ...(imageLabel ? { imageLabel } : {}),
+    };
+  },
   createBackend: (ctx) => createGcpBackend(ctx),
   coordinates: (config) =>
     config.gcp ? { accountOrOrganization: config.gcp.projectId, region: config.gcp.region } : {},
@@ -387,12 +394,6 @@ const gcp: HostingProvider = {
         clause: "config.v1",
         message:
           'contract config.gcp.durability: a GCP deployment requires env.core.SNAPSHOT_STORE and TRANSFER_STORE to be "s3" (GCS via S3 interoperability)',
-      });
-    }
-    if (!core.S3_BUCKET?.trim() || !core.S3_REGION?.trim()) {
-      errors.push({
-        clause: "config.v1",
-        message: "contract config.gcp.durability: a GCP deployment requires env.core.S3_BUCKET and S3_REGION",
       });
     }
     return errors;
