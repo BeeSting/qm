@@ -376,6 +376,10 @@ test("resource reconciler rejects stale, mismatched, and colliding immutable ide
       fly: { appsOutput: appOutput([["unrelated-personal-app", "existing-egress-id"]]) },
     },
     {
+      initial: inventory({ h2ResourceReconciliation: "unresolved" }),
+      fly: { appsOutput: appOutput([]) },
+    },
+    {
       initial: inventory({
         h2ResourceReconciliation: "unresolved",
         objectStorage: { name: storageName, identityKind: "name-bound", deletionKey: storageName },
@@ -502,7 +506,10 @@ test("resource reconciler ignores unrelated resources without expanding approved
   const harness = createHarness(inventory({ h2ResourceReconciliation: "unresolved" }));
   try {
     harness.setFlyScenario({
-      appsOutput: appOutput([["unrelated-personal-app", "unrelated-app-id"]]),
+      appsOutput: appOutput([
+        [approvedApps[6]!, "existing-egress-id"],
+        ["unrelated-personal-app", "unrelated-app-id"],
+      ]),
       mpgOutput: JSON.stringify([mpgEntry("unrelated-stage-a-pg", "unrelated-pg-id")]),
       storageOutput: storageTable([["unrelated-stage-a-data", "personal"]]),
     });

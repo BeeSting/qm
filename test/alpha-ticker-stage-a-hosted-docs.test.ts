@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 
 const docsRoot = "docs/alpha-ticker-stage-a-hosted";
+const historicalPlanPath = "docs/superpowers/plans/2026-08-02-alpha-ticker-qm-hosted-stage-a.md";
 const documentNames = [
   "runbook.md",
   "evidence-index.md",
@@ -153,7 +154,7 @@ test("hosted runbook defines the complete H0-H5 operating boundary", () => {
       "At H0, leave `FLY_SANDBOX_API_TOKEN` unset",
       'awk -F= \'$1 == "CAPABILITY_SECRET" { print }\' "$HOSTED_ROOT/.env" |',
       "fly secrets import -a alpha-ticker-stage-a-egress",
-      "Run guarded interactive local QM setup only after the sandbox token is present",
+      "The committed required-secret validator must pass before setup",
       "FLY_SANDBOX_API_TOKEN",
       "curl -sS -o /dev/null -w '%{http_code}\\n' https://example.com",
       "Expected output is exactly `403`",
@@ -183,7 +184,7 @@ test("hosted runbook defines the complete H0-H5 operating boundary", () => {
   assert.ok(preflight >= 0 && preflight < firstFlyMutation, "H0 preflight must precede Fly mutation");
 });
 
-test("H0 defers setup and H1 runs one guarded interactive setup after secure token entry", () => {
+test("H0 defers setup and H1 runs one guarded immutable setup after secure token entry", () => {
   const runbook = readDocument("runbook.md");
   const h0 = section(runbook, "### Gate H0", "### Gate H1");
   const h1 = section(runbook, "### Gate H1", "### Gate H2");
@@ -209,10 +210,14 @@ test("H0 defers setup and H1 runs one guarded interactive setup after secure tok
     [
       "FLY_SANDBOX_API_TOKEN",
       "secure in-place local editor",
-      "all required values are complete",
-      'if ! "$QM_BIN" setup >/dev/null 2>&1; then',
-      "stdin remains attached to the terminal",
+      "exact operator-secret set implied by the pinned QM configuration",
+      'REQUIRED_SECRET_VALIDATOR="$REPO_ROOT/scripts/alpha-ticker-stage-a-hosted/validate-required-secrets.mjs"',
+      'if ! "$REQUIRED_SECRET_VALIDATOR" --env "$ENV_PATH" >/dev/null; then',
+      "required-secret-completeness-failed",
+      "ENV_SHA256_BEFORE",
+      'if ! "$QM_BIN" setup </dev/null >/dev/null 2>&1; then',
       "qm-setup-validation-failed",
+      "qm-setup-mutated-env",
       '"$QM_BIN" check',
       ".generated/alpha-ticker-stage-a-hosted/resource-inventory.json",
       "partial inventory",
@@ -226,15 +231,22 @@ test("H0 defers setup and H1 runs one guarded interactive setup after secure tok
   );
 
   assert.doesNotMatch(h0, /"\$QM_BIN" setup|^\s*qm setup\b/m);
-  assert.doesNotMatch(h1, /"\$QM_BIN" setup <\/dev\/null/);
-  assert.equal(h1.match(/^if ! "\$QM_BIN" setup >\/dev\/null 2>&1; then$/gm)?.length ?? 0, 1);
-  assert.equal(runbook.match(/^if ! "\$QM_BIN" setup >\/dev\/null 2>&1; then$/gm)?.length ?? 0, 1);
+  assert.equal(h1.match(/^if ! "\$QM_BIN" setup <\/dev\/null >\/dev\/null 2>&1; then$/gm)?.length ?? 0, 1);
+  assert.equal(runbook.match(/^if ! "\$QM_BIN" setup <\/dev\/null >\/dev\/null 2>&1; then$/gm)?.length ?? 0, 1);
   const tokenEditor = h1.indexOf('"${EDITOR:?set EDITOR to a secure in-place local editor}" "$ENV_PATH"');
-  const setup = h1.indexOf('if ! "$QM_BIN" setup >/dev/null 2>&1; then');
+  const validator = h1.indexOf('if ! "$REQUIRED_SECRET_VALIDATOR" --env "$ENV_PATH" >/dev/null; then');
+  const preHash = h1.indexOf("ENV_SHA256_BEFORE");
+  const setup = h1.indexOf('if ! "$QM_BIN" setup </dev/null >/dev/null 2>&1; then');
+  const immutable = h1.indexOf("qm-setup-mutated-env", setup);
   const check = h1.indexOf('"$QM_BIN" check', setup);
   assert.ok(
-    tokenEditor >= 0 && tokenEditor < setup && setup < check,
-    "secure token entry must precede setup and check",
+    tokenEditor >= 0 &&
+      tokenEditor < validator &&
+      validator < preHash &&
+      preHash < setup &&
+      setup < immutable &&
+      immutable < check,
+    "secure token entry and completeness validation must precede immutable setup and check",
   );
 });
 
@@ -264,6 +276,8 @@ test("H2 and H3 lifecycle-wrap every deployment with the tested resource reconci
       "before controlled teardown",
       "rerun only `--reconcile`",
       "must not run `qm up` again",
+      "verify_committed_script",
+      "reconciler-integrity-failed",
     ],
     "H2 resource reconciliation",
   );
@@ -311,6 +325,11 @@ test("H3 uses a reversible qconfig drill and manual in-place provider-key replac
       "replacementCount !== 1",
       "Pre-mutation boundary and policy checks",
       "Run exactly one synthetic denial probe",
+      "STAGE_A_ZERO_BUDGET_DENIAL_PROBE",
+      "budget exceeded ($0.00 of $0); try again later",
+      "Admin > Metrics",
+      "anatomy.composite.modelCalls",
+      "byte-for-byte unchanged",
       "verified zero-budget deployment",
       "No further turn is permitted",
       "original 45 configuration is restored and redeployed",
@@ -544,7 +563,6 @@ test("hosted operating documents exclude identities, secrets, captured content, 
     /(?:fly apps destroy --all|docker (?:system|volume|network) prune|rm -rf|--auto-approve)/i,
   );
   assert.doesNotMatch(corpus, /\bnpm\s+exec\b|\bnpx\b/i);
-  assert.doesNotMatch(corpus, /"\$QM_BIN" setup <\/dev\/null/);
   assert.doesNotMatch(
     corpus,
     /fly-apps\.|managed-postgres-list\.private|tigris-storage-list\.private|h2-data-reconciliation\.private|FLY_APPS_SNAPSHOT|MPG_SNAPSHOT|TIGRIS_SNAPSHOT|H2_DATA_RECONCILIATION/,
@@ -553,4 +571,21 @@ test("hosted operating documents exclude identities, secrets, captured content, 
     corpus,
     /^\s*(?:\$\s*)?qm\s+(?:check|plan|sandbox|setup|secrets|up|doctor|conformance|status|down)\b/im,
   );
+});
+
+test("historical implementation plan is non-operational and defers exclusively to the runbook", () => {
+  const plan = readFileSync(historicalPlanPath, "utf8");
+  requireAll(
+    plan,
+    [
+      "Status: `archived-non-operational`",
+      "Do not execute commands from earlier revisions",
+      "docs/alpha-ticker-stage-a-hosted/runbook.md",
+      "sole operational authority",
+      "Gate H0",
+    ],
+    "historical implementation plan",
+  );
+  assert.doesNotMatch(plan, /```(?:bash|sh|shell)|\bnpm\s+exec\b|\bnpx\b|\bqm\s+(?:setup|up|down|secrets|sandbox)\b/i);
+  assert.doesNotMatch(plan, /execute (?:this )?plan|task-by-task|exact Tigris id/i);
 });

@@ -333,6 +333,9 @@ function parseApps(text, existingApps) {
     if (existingIds.has(entry.ID) && existingIds.get(entry.ID) !== entry.Name) fail();
     if (APPROVED_APP_SET.has(entry.Name)) discovered.set(entry.Name, entry.ID);
   }
+  for (const entry of existingApps) {
+    if (discovered.get(entry.name) !== entry.id) fail();
+  }
   const merged = new Map(existingApps.map((entry) => [entry.name, entry.id]));
   for (const [name, id] of discovered) {
     if (merged.has(name) && merged.get(name) !== id) fail();

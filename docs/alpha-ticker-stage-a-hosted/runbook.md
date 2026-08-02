@@ -148,7 +148,7 @@ fly apps create alpha-ticker-stage-a-hosted-sandboxes --org personal
 
 Pause again before setup or publication. Append only the newly created sandbox app to the approved `apps` list, re-run the mode-`0600` and ignore checks, and leave `sandboxRegistry` null until publication returns its separate immutable registry identifier. After publication, capture that registry identifier before planning. A partial inventory may contain only resources confirmed to exist; it must never contain placeholders or expected-but-uncreated resources.
 
-Enter `FLY_SANDBOX_API_TOKEN` directly into the existing `.env` with a secure in-place local editor; do not pass its value in a command, shell history, or terminal output. Reassert the same inode, mode, and ignore protections. Run guarded interactive local QM setup only after the sandbox token is present and all required values are complete. During setup, stdin remains attached to the terminal TTY while stdout and stderr are suppressed; no prompt or identity derivation is expected. A failure emits only the fixed marker and stops. Then run `qm check`, publish, and plan:
+Enter `FLY_SANDBOX_API_TOKEN` directly into the existing `.env` with a secure in-place local editor; do not pass its value in a command, shell history, or terminal output. Reassert the same inode, mode, and ignore protections. The committed required-secret validator must pass before setup. It checks the exact operator-secret set implied by the pinned QM configuration, requires `ADMIN_GRANTS` and `AUTH_ALLOWED_EMAILS` to be independently present, and emits no value or identity. Setup then runs once with stdin closed and output suppressed, so an unexpected prompt cannot block invisibly. The `.env` inode, mode, bytes, and required-secret result must remain identical across setup; any difference emits only a fixed marker and stops. Then run `qm check`, publish, and plan:
 
 ```bash
 cd "$HOSTED_ROOT"
@@ -156,6 +156,8 @@ cd "$HOSTED_ROOT"
 chmod 600 "$INVENTORY_PATH"
 git -C "$REPO_ROOT" check-ignore --quiet .generated/alpha-ticker-stage-a-hosted/resource-inventory.json
 ENV_PATH="$HOSTED_ROOT/.env"
+REQUIRED_SECRET_VALIDATOR="$REPO_ROOT/scripts/alpha-ticker-stage-a-hosted/validate-required-secrets.mjs"
+REQUIRED_SECRET_VALIDATOR_REL="scripts/alpha-ticker-stage-a-hosted/validate-required-secrets.mjs"
 test -f "$ENV_PATH"
 test ! -L "$ENV_PATH"
 chmod 600 "$ENV_PATH"
@@ -168,13 +170,51 @@ test ! -L "$ENV_PATH"
 test "$(stat -f '%d:%i' "$ENV_PATH")" = "$ENV_DEVICE_INODE_BEFORE"
 test "$(stat -f '%Lp' "$ENV_PATH")" = "600"
 git -C "$REPO_ROOT" check-ignore --quiet deploy/layers/alpha-ticker-stage-a-hosted/.env
+VALIDATOR_COMMITTED_HASH="$(git -C "$REPO_ROOT" rev-parse "HEAD:$REQUIRED_SECRET_VALIDATOR_REL" 2>/dev/null)" || \
+  VALIDATOR_COMMITTED_HASH=""
+VALIDATOR_CURRENT_HASH="$(git -C "$REPO_ROOT" hash-object "$REQUIRED_SECRET_VALIDATOR" 2>/dev/null)" || \
+  VALIDATOR_CURRENT_HASH=""
+if [ ! -f "$REQUIRED_SECRET_VALIDATOR" ] || [ -L "$REQUIRED_SECRET_VALIDATOR" ] || \
+  [ ! -x "$REQUIRED_SECRET_VALIDATOR" ] || [ -z "$VALIDATOR_COMMITTED_HASH" ] || \
+  [ -z "$VALIDATOR_CURRENT_HASH" ] || [ "$VALIDATOR_COMMITTED_HASH" != "$VALIDATOR_CURRENT_HASH" ]; then
+  printf '%s\n' 'required-secret-validator-integrity-failed' >&2
+  exit 1
+fi
+if ! "$REQUIRED_SECRET_VALIDATOR" --env "$ENV_PATH" >/dev/null; then
+  printf '%s\n' 'required-secret-completeness-failed' >&2
+  exit 1
+fi
+ENV_SHA256_BEFORE="$(node --input-type=module - "$ENV_PATH" <<'NODE'
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+
+process.stdout.write(createHash("sha256").update(readFileSync(process.argv[2])).digest("hex"));
+NODE
+)"
 node "$REPO_ROOT/scripts/alpha-ticker-stage-a-hosted/activation-record.mjs" \
   --verify-qm-install --root "$HOSTED_ROOT"
-if ! "$QM_BIN" setup >/dev/null 2>&1; then
+if ! "$QM_BIN" setup </dev/null >/dev/null 2>&1; then
   printf '%s\n' 'qm-setup-validation-failed' >&2
   exit 1
 fi
-chmod 600 "$HOSTED_ROOT/.env"
+ENV_SHA256_AFTER="$(node --input-type=module - "$ENV_PATH" <<'NODE'
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+
+process.stdout.write(createHash("sha256").update(readFileSync(process.argv[2])).digest("hex"));
+NODE
+)"
+if [ ! -f "$ENV_PATH" ] || [ -L "$ENV_PATH" ] || \
+  [ "$(stat -f '%d:%i' "$ENV_PATH")" != "$ENV_DEVICE_INODE_BEFORE" ] || \
+  [ "$(stat -f '%Lp' "$ENV_PATH")" != "600" ] || \
+  [ "$ENV_SHA256_AFTER" != "$ENV_SHA256_BEFORE" ]; then
+  printf '%s\n' 'qm-setup-mutated-env' >&2
+  exit 1
+fi
+if ! "$REQUIRED_SECRET_VALIDATOR" --env "$ENV_PATH" >/dev/null; then
+  printf '%s\n' 'required-secret-post-setup-validation-failed' >&2
+  exit 1
+fi
 git -C "$REPO_ROOT" check-ignore --quiet deploy/layers/alpha-ticker-stage-a-hosted/.env
 node "$REPO_ROOT/scripts/alpha-ticker-stage-a-hosted/activation-record.mjs" \
   --verify-qm-install --root "$HOSTED_ROOT"
@@ -191,7 +231,7 @@ The egress probe must first complete its silent authenticated positive canary, t
 
 ### Gate H2: Controlled Deployment
 
-Push secrets through the verified repository-local QM executable, review the plan, deploy the minimum service set, and run live checks. The committed reconciler is the only H2/H3 inventory mutation path. It queries Fly apps, Managed Postgres, and Tigris without retaining raw provider snapshots, preserves provider-supplied immutable identifiers for Fly apps and Managed Postgres, and atomically advances the exact `"h2ResourceReconciliation"` field. Fly's Tigris list surface exposes only bucket `NAME` and `ORG`, so object storage is recorded explicitly as `{ "identityKind": "name-bound", "deletionKey": "alpha-ticker-stage-a-hosted-data" }` rather than claiming a fabricated immutable ID. The committed Fly app parser follows the provider's real JSON shape and requires `Organization.Slug` to equal `personal`.
+Push secrets through the verified repository-local QM executable, review the plan, deploy the minimum service set, and run live checks. The committed reconciler is the only H2/H3 inventory mutation path. It queries Fly apps, Managed Postgres, and Tigris without retaining raw provider snapshots, preserves provider-supplied immutable identifiers for Fly apps and Managed Postgres, and atomically advances the exact `"h2ResourceReconciliation"` field. A previously captured approved Fly app must still be present with the same provider identity; absence, replacement, or collision leaves reconciliation unresolved. Fly's Tigris list surface exposes only bucket `NAME` and `ORG`, so object storage is recorded explicitly as `{ "identityKind": "name-bound", "deletionKey": "alpha-ticker-stage-a-hosted-data" }` rather than claiming a fabricated immutable ID. The committed Fly app parser follows the provider's real JSON shape and requires `Organization.Slug` to equal `personal`.
 
 #### Deployment lifecycle wrapper
 
@@ -203,12 +243,25 @@ HOSTED_ROOT="$REPO_ROOT/deploy/layers/alpha-ticker-stage-a-hosted"
 QM_BIN="$HOSTED_ROOT/node_modules/.bin/qm"
 INVENTORY_PATH="$REPO_ROOT/.generated/alpha-ticker-stage-a-hosted/resource-inventory.json"
 RECONCILER="$REPO_ROOT/scripts/alpha-ticker-stage-a-hosted/reconcile-resources.mjs"
+RECONCILER_REL="scripts/alpha-ticker-stage-a-hosted/reconcile-resources.mjs"
+verify_committed_script() {
+  script_rel="$1"
+  script_path="$REPO_ROOT/$script_rel"
+  committed_hash="$(git -C "$REPO_ROOT" rev-parse "HEAD:$script_rel" 2>/dev/null)" || return 1
+  current_hash="$(git -C "$REPO_ROOT" hash-object "$script_path" 2>/dev/null)" || return 1
+  test -f "$script_path" && test ! -L "$script_path" && test -x "$script_path" &&
+    test -n "$committed_hash" && test "$committed_hash" = "$current_hash"
+}
 test -f "$INVENTORY_PATH"
 test ! -L "$INVENTORY_PATH"
 test "$(stat -f '%Lp' "$INVENTORY_PATH")" = "600"
 git -C "$REPO_ROOT" check-ignore --quiet .generated/alpha-ticker-stage-a-hosted/resource-inventory.json
 node "$REPO_ROOT/scripts/alpha-ticker-stage-a-hosted/activation-record.mjs" \
   --verify-qm-install --root "$HOSTED_ROOT"
+if ! verify_committed_script "$RECONCILER_REL"; then
+  printf '%s\n' 'reconciler-integrity-failed' >&2
+  exit 1
+fi
 
 run_reconciled_qm_up() {
   if ! "$RECONCILER" --begin --inventory "$INVENTORY_PATH" >/dev/null; then
@@ -278,12 +331,25 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 HOSTED_ROOT="$REPO_ROOT/deploy/layers/alpha-ticker-stage-a-hosted"
 INVENTORY_PATH="$REPO_ROOT/.generated/alpha-ticker-stage-a-hosted/resource-inventory.json"
 RECONCILER="$REPO_ROOT/scripts/alpha-ticker-stage-a-hosted/reconcile-resources.mjs"
+RECONCILER_REL="scripts/alpha-ticker-stage-a-hosted/reconcile-resources.mjs"
+verify_committed_script() {
+  script_rel="$1"
+  script_path="$REPO_ROOT/$script_rel"
+  committed_hash="$(git -C "$REPO_ROOT" rev-parse "HEAD:$script_rel" 2>/dev/null)" || return 1
+  current_hash="$(git -C "$REPO_ROOT" hash-object "$script_path" 2>/dev/null)" || return 1
+  test -f "$script_path" && test ! -L "$script_path" && test -x "$script_path" &&
+    test -n "$committed_hash" && test "$committed_hash" = "$current_hash"
+}
 test -f "$INVENTORY_PATH"
 test ! -L "$INVENTORY_PATH"
 test "$(stat -f '%Lp' "$INVENTORY_PATH")" = "600"
 git -C "$REPO_ROOT" check-ignore --quiet .generated/alpha-ticker-stage-a-hosted/resource-inventory.json
 node "$REPO_ROOT/scripts/alpha-ticker-stage-a-hosted/activation-record.mjs" \
   --verify-qm-install --root "$HOSTED_ROOT"
+if ! verify_committed_script "$RECONCILER_REL"; then
+  printf '%s\n' 'reconciler-integrity-failed' >&2
+  exit 1
+fi
 if ! "$RECONCILER" --reconcile --inventory "$INVENTORY_PATH" >/dev/null; then
   printf '%s\n' 'fresh-shell-resource-reconciliation-failed' >&2
   exit 1
@@ -414,7 +480,14 @@ if ! "$QM_BIN" status; then
 fi
 ```
 
-Only that successful mutation, reconciled core deployment, live check, and status readback constitute a verified zero-budget deployment. Run exactly one synthetic denial probe; it must be denied before any provider request. Record only the `h3-zero-budget-denial` pass/fail check. Do not run a second probe. No further turn is permitted until the original 45 configuration is restored and redeployed, reconciled, and revalidated. Regardless of the denial result, immediately restore the exact original bytes and complete the following guarded sequence before incident teardown or any other turn:
+Only that successful mutation, reconciled core deployment, live check, and status readback constitute a verified zero-budget deployment. The denial probe has this exact operator contract:
+
+1. In the authenticated `Admin > Metrics` view, select P1's pseudonymous personal scope and retain only a private temporary copy of the aggregate `anatomy.composite.modelCalls` object. Do not retain a scope label, identity, prompt, response, or provider content.
+2. In P1's existing synthetic evaluation conversation, submit exactly `STAGE_A_ZERO_BUDGET_DENIAL_PROBE` once. This is the one permitted synthetic denial probe.
+3. Require the turn to return the refusal reason exactly `budget exceeded ($0.00 of $0); try again later`. Any assistant output, provider content, different refusal, or successful turn fails the drill.
+4. Refresh the same aggregate metrics view and require the canonical JSON representation of `anatomy.composite.modelCalls` to be byte-for-byte unchanged. This is the mechanical confirmation that no model/provider request was recorded. Delete both temporary aggregate copies immediately after comparison.
+
+Run exactly one synthetic denial probe; it must be denied before any provider request. Record only the `h3-zero-budget-denial` pass/fail check. Do not run a second probe. No further turn is permitted until the original 45 configuration is restored and redeployed, reconciled, and revalidated. Regardless of the denial result, immediately restore the exact original bytes and complete the following guarded sequence before incident teardown or any other turn:
 
 ```bash
 if ! restore_budget_config; then
