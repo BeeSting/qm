@@ -659,7 +659,7 @@ function validateEgress(snapshot) {
   if (!snapshot.bytes.equals(Buffer.from(EXPECTED_EGRESS))) fail("egress invalid");
 }
 
-function validateInventory(snapshot, { requireFullApps = false } = {}) {
+function validateInventory(snapshot, { requireFullInventory = false } = {}) {
   const value = parseSnapshotJson(snapshot, "input invalid");
   exactOwnKeys(value, ["flyOrg", "apps", "managedPostgres", "objectStorage", "sandboxRegistry"], "inventory invalid");
   if (
@@ -685,13 +685,17 @@ function validateInventory(snapshot, { requireFullApps = false } = {}) {
     validateEntry(entry, entry.name);
     appNames.add(entry.name);
   }
-  if (requireFullApps && HOSTED_APPS.some((name) => !appNames.has(name))) fail("inventory invalid");
+  if (requireFullInventory && HOSTED_APPS.some((name) => !appNames.has(name))) fail("inventory invalid");
   for (const [entry, expectedName] of [
     [value.managedPostgres, "alpha-ticker-stage-a-hosted-pg"],
     [value.objectStorage, "alpha-ticker-stage-a-hosted-data"],
     [value.sandboxRegistry, "alpha-ticker-stage-a-hosted-sandboxes"],
   ]) {
-    if (entry !== null) validateEntry(entry, expectedName);
+    if (entry === null) {
+      if (requireFullInventory) fail("inventory invalid");
+    } else {
+      validateEntry(entry, expectedName);
+    }
   }
 }
 
@@ -1065,7 +1069,7 @@ export function collectEvidence({
   }
   const liveChecks = parseLiveChecks(snapshots.liveChecks);
   const liveChecksPass = liveChecks.checks.every((check) => check.status === "pass");
-  validateInventory(snapshots.inventory, { requireFullApps: liveChecksPass });
+  validateInventory(snapshots.inventory, { requireFullInventory: liveChecksPass });
   if (liveChecksPass && snapshots.ledger === null) fail("scoreSummary");
   const scoreSummary =
     snapshots.ledger === null ? parseScoreLedger({ bytes: Buffer.alloc(0) }) : parseScoreLedger(snapshots.ledger);

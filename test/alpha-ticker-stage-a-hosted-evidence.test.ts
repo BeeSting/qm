@@ -502,6 +502,33 @@ test("hosted evidence permits partial approved inventory only for a non-passing 
   }
 });
 
+test("hosted evidence requires all infrastructure identities for an all-pass H2/H3 register", () => {
+  for (const livePass of [false, true]) {
+    const fixture = createEvidenceFixture();
+    try {
+      const inventoryPath = join(fixture.generated, "resource-inventory.json");
+      const inventory = JSON.parse(readFileSync(inventoryPath, "utf8"));
+      inventory.managedPostgres = null;
+      inventory.objectStorage = null;
+      inventory.sandboxRegistry = null;
+      writeJson(inventoryPath, inventory);
+      if (!livePass) {
+        writeLiveChecks(
+          fixture.generated,
+          4.5,
+          1.25,
+          liveCheckIds.map((id, index) => ({ id, status: index === 0 ? "fail" : "not-run" })),
+        );
+      }
+
+      if (livePass) assert.throws(() => collect(fixture), /evidence inventory/i);
+      else assert.equal(collect(fixture).pass, false);
+    } finally {
+      fixture.cleanup();
+    }
+  }
+});
+
 test("hosted evidence requires private modes on runtime score, inventory, and live-check files", () => {
   for (const relativePath of ["scores.jsonl", "resource-inventory.json", "live-checks.json"]) {
     const fixture = createEvidenceFixture();
