@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { createPrivateKey } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -145,6 +146,12 @@ function validateSigningJwk(value) {
   ) {
     invalid();
   }
+  try {
+    const key = createPrivateKey({ key: jwk, format: "jwk" });
+    if (key.asymmetricKeyType !== "ec" || key.asymmetricKeyDetails?.namedCurve !== "prime256v1") invalid();
+  } catch {
+    invalid();
+  }
 }
 
 export function assertRequiredSecrets(source) {
@@ -165,7 +172,10 @@ export function assertRequiredSecrets(source) {
   if (!SMTP_HOST_PATTERN.test(requireValue(values, "SMTP_HOST"))) invalid();
 
   const distinctValues = DISTINCT_SECRET_NAMES.map((name) => requireValue(values, name));
-  if (distinctValues.some((value) => value.length < 32) || new Set(distinctValues).size !== distinctValues.length) {
+  if (
+    distinctValues.some((value) => !/^[0-9a-f]{64}$/.test(value)) ||
+    new Set(distinctValues).size !== distinctValues.length
+  ) {
     invalid();
   }
 }

@@ -148,13 +148,15 @@ test("hosted runbook defines the complete H0-H5 operating boundary", () => {
   requireAll(
     runbook,
     [
-      '"$QM_BIN" setup',
       'chmod 600 "$HOSTED_ROOT/.env"',
       'git -C "$REPO_ROOT" check-ignore --quiet deploy/layers/alpha-ticker-stage-a-hosted/.env',
       "At H0, leave `FLY_SANDBOX_API_TOKEN` unset",
       'awk -F= \'$1 == "CAPABILITY_SECRET" { print }\' "$HOSTED_ROOT/.env" |',
       "fly secrets import -a alpha-ticker-stage-a-egress",
-      "The committed required-secret validator must pass before setup",
+      "The committed required-secret validator complements the interactive setup wizard",
+      'if ! "$QM_BIN" setup; then',
+      "pre-setup-qm-verification-failed",
+      "qm-interactive-setup-failed",
       "FLY_SANDBOX_API_TOKEN",
       "curl -sS -o /dev/null -w '%{http_code}\\n' https://example.com",
       "Expected output is exactly `403`",
@@ -184,7 +186,7 @@ test("hosted runbook defines the complete H0-H5 operating boundary", () => {
   assert.ok(preflight >= 0 && preflight < firstFlyMutation, "H0 preflight must precede Fly mutation");
 });
 
-test("H0 defers setup and H1 runs one guarded immutable setup after secure token entry", () => {
+test("H0 defers secret completion and H1 uses guarded TTY setup before immutable validation", () => {
   const runbook = readDocument("runbook.md");
   const h0 = section(runbook, "### Gate H0", "### Gate H1");
   const h1 = section(runbook, "### Gate H1", "### Gate H2");
@@ -195,7 +197,7 @@ test("H0 defers setup and H1 runs one guarded immutable setup after secure token
       "ADMIN_GRANTS",
       "AUTH_ALLOWED_EMAILS",
       "directly in the private `.env`",
-      "Setup is explicitly deferred until H1",
+      "Secret completion is explicitly deferred until H1",
       "H0 must not run `qm setup`",
       "must not derive one identity list from the other",
       "Identity output may never be retained",
@@ -211,13 +213,20 @@ test("H0 defers setup and H1 runs one guarded immutable setup after secure token
       "FLY_SANDBOX_API_TOKEN",
       "secure in-place local editor",
       "exact operator-secret set implied by the pinned QM configuration",
+      "cryptographically strong local secrets and the P-256 signing JWK",
+      'if ! "$QM_BIN" setup; then',
+      "qm-interactive-setup-failed",
+      "setup-file-integrity-failed",
       'REQUIRED_SECRET_VALIDATOR="$REPO_ROOT/scripts/alpha-ticker-stage-a-hosted/validate-required-secrets.mjs"',
       'if ! "$REQUIRED_SECRET_VALIDATOR" --env "$ENV_PATH" >/dev/null; then',
       "required-secret-completeness-failed",
-      "ENV_SHA256_BEFORE",
-      'if ! "$QM_BIN" setup </dev/null >/dev/null 2>&1; then',
-      "qm-setup-validation-failed",
-      "qm-setup-mutated-env",
+      'if ! ENV_SHA256_BEFORE="$(node --input-type=module - "$ENV_PATH"',
+      'if [ -z "$ENV_SHA256_BEFORE" ] || [ "${#ENV_SHA256_BEFORE}" -ne 64 ]; then',
+      "env-pre-validation-hash-failed",
+      'if ! ENV_SHA256_AFTER="$(node --input-type=module - "$ENV_PATH"',
+      'if [ -z "$ENV_SHA256_AFTER" ] || [ "${#ENV_SHA256_AFTER}" -ne 64 ]; then',
+      "env-post-validation-hash-failed",
+      "secret-validation-mutated-env",
       '"$QM_BIN" check',
       ".generated/alpha-ticker-stage-a-hosted/resource-inventory.json",
       "partial inventory",
@@ -231,22 +240,26 @@ test("H0 defers setup and H1 runs one guarded immutable setup after secure token
   );
 
   assert.doesNotMatch(h0, /"\$QM_BIN" setup|^\s*qm setup\b/m);
-  assert.equal(h1.match(/^if ! "\$QM_BIN" setup <\/dev\/null >\/dev\/null 2>&1; then$/gm)?.length ?? 0, 1);
-  assert.equal(runbook.match(/^if ! "\$QM_BIN" setup <\/dev\/null >\/dev\/null 2>&1; then$/gm)?.length ?? 0, 1);
+  assert.equal(h1.match(/^if ! "\$QM_BIN" setup; then$/gm)?.length ?? 0, 1);
+  assert.equal(runbook.match(/^if ! "\$QM_BIN" setup; then$/gm)?.length ?? 0, 1);
+  assert.doesNotMatch(h1, /^\s*"\$QM_BIN" setup|^\s*qm setup\b/m);
+  assert.doesNotMatch(runbook, /^\s*"\$QM_BIN" setup|^\s*qm setup\b/m);
   const tokenEditor = h1.indexOf('"${EDITOR:?set EDITOR to a secure in-place local editor}" "$ENV_PATH"');
+  const setup = h1.indexOf('if ! "$QM_BIN" setup; then');
   const validator = h1.indexOf('if ! "$REQUIRED_SECRET_VALIDATOR" --env "$ENV_PATH" >/dev/null; then');
   const preHash = h1.indexOf("ENV_SHA256_BEFORE");
-  const setup = h1.indexOf('if ! "$QM_BIN" setup </dev/null >/dev/null 2>&1; then');
-  const immutable = h1.indexOf("qm-setup-mutated-env", setup);
-  const check = h1.indexOf('"$QM_BIN" check', setup);
+  const check = h1.indexOf('"$QM_BIN" check', preHash);
+  const postHash = h1.indexOf("ENV_SHA256_AFTER", check);
+  const immutable = h1.indexOf("secret-validation-mutated-env", postHash);
   assert.ok(
     tokenEditor >= 0 &&
-      tokenEditor < validator &&
-      validator < preHash &&
-      preHash < setup &&
-      setup < immutable &&
-      immutable < check,
-    "secure token entry and completeness validation must precede immutable setup and check",
+      tokenEditor < setup &&
+      setup < preHash &&
+      preHash < validator &&
+      validator < check &&
+      check < postHash &&
+      postHash < immutable,
+    "secure token entry and TTY generation must precede complete validation and fail-closed check immutability proof",
   );
 });
 
@@ -327,9 +340,12 @@ test("H3 uses a reversible qconfig drill and manual in-place provider-key replac
       "Run exactly one synthetic denial probe",
       "STAGE_A_ZERO_BUDGET_DENIAL_PROBE",
       "budget exceeded ($0.00 of $0); try again later",
-      "Admin > Metrics",
-      "anatomy.composite.modelCalls",
-      "byte-for-byte unchanged",
+      'node --test "$REPO_ROOT/test/alpha-ticker-stage-a-hosted-budget-boundary.test.ts"',
+      'BUDGET_BOUNDARY_TEST_REL="test/alpha-ticker-stage-a-hosted-budget-boundary.test.ts"',
+      "budget-boundary-test-integrity-failed",
+      "pre-budget-tracked-worktree-dirty",
+      "throws if the harness/provider boundary is reached",
+      "two-part proof",
       "verified zero-budget deployment",
       "No further turn is permitted",
       "original 45 configuration is restored and redeployed",

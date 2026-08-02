@@ -89,9 +89,10 @@ Every operational QM block below re-verifies the repository-local install immedi
 
 H0 may establish the dedicated, capped provider project and revocable pilot SMTP grant. It must not create Fly resources, upload deployment secrets, or make billable model calls.
 
-At H0, leave `FLY_SANDBOX_API_TOKEN` unset. Use a secure local editor configured without swap, backup, history, terminal echo, or cloud synchronization to populate every H0-available value directly in the private `.env`, explicitly including both `ADMIN_GRANTS` and `AUTH_ALLOWED_EMAILS`. The two identity lists are independent and the operator must not derive one identity list from the other. Setup is explicitly deferred until H1. H0 must not run `qm setup`: the pinned command can silently prompt for the intentionally absent sandbox token and exit successfully after a skip, which is not valid H0 evidence.
+At H0, leave `FLY_SANDBOX_API_TOKEN` unset. Use a secure local editor configured without swap, backup, history, terminal echo, or cloud synchronization to populate every H0-available value directly in the private `.env`, explicitly including both `ADMIN_GRANTS` and `AUTH_ALLOWED_EMAILS`. The two identity lists are independent and the operator must not derive one identity list from the other. Secret completion is explicitly deferred until H1. H0 must not run `qm setup`: the pinned command is an interactive wizard and the intentionally absent sandbox token makes its result invalid H0 evidence.
 
 ```bash
+set -euo pipefail
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 HOSTED_ROOT="$REPO_ROOT/deploy/layers/alpha-ticker-stage-a-hosted"
 QM_BIN="$HOSTED_ROOT/node_modules/.bin/qm"
@@ -116,6 +117,7 @@ Identity output may never be retained in terminal capture, logs, evidence, shell
 Create the exact egress application only after H0 passes. H1 uses progressive private inventory: immediately after each successful create and before the next cloud mutation, capture that resource's exact approved name and immutable identifier in `.generated/alpha-ticker-stage-a-hosted/resource-inventory.json`. Initialize the exact lifecycle field as `"h2ResourceReconciliation": "not-started"`; before H2 this state permits `managedPostgres` and `objectStorage` to remain `null` because no H2 deployment attempt has begun. Keep the partial inventory ignored and mode `0600` so an H1 stop can use the hardened teardown path.
 
 ```bash
+set -euo pipefail
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 HOSTED_ROOT="$REPO_ROOT/deploy/layers/alpha-ticker-stage-a-hosted"
 QM_BIN="$HOSTED_ROOT/node_modules/.bin/qm"
@@ -128,6 +130,7 @@ fly apps create alpha-ticker-stage-a-egress --org personal
 Before importing or deploying anything else, use a secure local inventory path to record the egress app under `apps`. Set `flyOrg` to `personal`, set `h2ResourceReconciliation` to `not-started`, and leave `managedPostgres`, `objectStorage`, and `sandboxRegistry` as `null` until those resources actually exist. Never print the immutable identifier:
 
 ```bash
+set -euo pipefail
 "${EDITOR:?set EDITOR to a secure local inventory editor}" "$INVENTORY_PATH"
 chmod 600 "$INVENTORY_PATH"
 git -C "$REPO_ROOT" check-ignore --quiet .generated/alpha-ticker-stage-a-hosted/resource-inventory.json
@@ -146,11 +149,14 @@ node -- "$REPO_ROOT/scripts/alpha-ticker-stage-a-hosted/probe-egress.mjs" \
 fly apps create alpha-ticker-stage-a-hosted-sandboxes --org personal
 ```
 
-Pause again before setup or publication. Append only the newly created sandbox app to the approved `apps` list, re-run the mode-`0600` and ignore checks, and leave `sandboxRegistry` null until publication returns its separate immutable registry identifier. After publication, capture that registry identifier before planning. A partial inventory may contain only resources confirmed to exist; it must never contain placeholders or expected-but-uncreated resources.
+Pause again before secret completion or publication. Append only the newly created sandbox app to the approved `apps` list, re-run the mode-`0600` and ignore checks, and leave `sandboxRegistry` null until publication returns its separate immutable registry identifier. After publication, capture that registry identifier before planning. A partial inventory may contain only resources confirmed to exist; it must never contain placeholders or expected-but-uncreated resources.
 
-Enter `FLY_SANDBOX_API_TOKEN` directly into the existing `.env` with a secure in-place local editor; do not pass its value in a command, shell history, or terminal output. Reassert the same inode, mode, and ignore protections. The committed required-secret validator must pass before setup. It checks the exact operator-secret set implied by the pinned QM configuration, requires `ADMIN_GRANTS` and `AUTH_ALLOWED_EMAILS` to be independently present, and emits no value or identity. Setup then runs once with stdin closed and output suppressed, so an unexpected prompt cannot block invisibly. The `.env` inode, mode, bytes, and required-secret result must remain identical across setup; any difference emits only a fixed marker and stops. Then run `qm check`, publish, and plan:
+Enter `FLY_SANDBOX_API_TOKEN` and every other externally sourced value directly into the existing `.env` with a secure in-place local editor; do not pass any value in a command, shell history, or terminal output. Both independent identity lists must already be present. The committed required-secret validator complements the interactive setup wizard: pinned QM 0.1.4 must run once in the attached operator TTY so it can generate the eight independent 32-byte hexadecimal secrets and the P-256 private signing JWK using its local cryptographic generators. If the wizard prompts for any non-generated value, abort with Ctrl-C and stop rather than entering it through an unexpected path. The wizard output may show secret names but must not show or retain values or identities.
+
+After setup, reassert the same inode, mode, and ignore protections. The validator proves the exact operator-secret set implied by the pinned QM configuration, requires `ADMIN_GRANTS` and `AUTH_ALLOWED_EMAILS` to be independently present, requires the cryptographically strong local secrets and the P-256 signing JWK to be importable, and emits no value or identity. Prove the `.env` inode, mode, and bytes remain identical across required-secret validation and `qm check`; every hash and QM operation is fail closed and any difference emits only a fixed marker and stops. Then publish and plan:
 
 ```bash
+set -euo pipefail
 cd "$HOSTED_ROOT"
 "${EDITOR:?set EDITOR to a secure local inventory editor}" "$INVENTORY_PATH"
 chmod 600 "$INVENTORY_PATH"
@@ -180,51 +186,105 @@ if [ ! -f "$REQUIRED_SECRET_VALIDATOR" ] || [ -L "$REQUIRED_SECRET_VALIDATOR" ] 
   printf '%s\n' 'required-secret-validator-integrity-failed' >&2
   exit 1
 fi
+if ! node "$REPO_ROOT/scripts/alpha-ticker-stage-a-hosted/activation-record.mjs" \
+  --verify-qm-install --root "$HOSTED_ROOT"; then
+  printf '%s\n' 'pre-setup-qm-verification-failed' >&2
+  exit 1
+fi
+if ! "$QM_BIN" setup; then
+  printf '%s\n' 'qm-interactive-setup-failed' >&2
+  exit 1
+fi
+if [ ! -f "$ENV_PATH" ] || [ -L "$ENV_PATH" ] || \
+  [ "$(stat -f '%d:%i' "$ENV_PATH")" != "$ENV_DEVICE_INODE_BEFORE" ] || \
+  [ "$(stat -f '%Lp' "$ENV_PATH")" != "600" ]; then
+  printf '%s\n' 'setup-file-integrity-failed' >&2
+  exit 1
+fi
+if ! git -C "$REPO_ROOT" check-ignore --quiet deploy/layers/alpha-ticker-stage-a-hosted/.env; then
+  printf '%s\n' 'setup-env-ignore-check-failed' >&2
+  exit 1
+fi
+if ! ENV_SHA256_BEFORE="$(node --input-type=module - "$ENV_PATH" <<'NODE'
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+
+process.stdout.write(createHash("sha256").update(readFileSync(process.argv[2])).digest("hex"));
+NODE
+)"; then
+  printf '%s\n' 'env-pre-validation-hash-failed' >&2
+  exit 1
+fi
+if [ -z "$ENV_SHA256_BEFORE" ] || [ "${#ENV_SHA256_BEFORE}" -ne 64 ]; then
+  printf '%s\n' 'env-pre-validation-hash-failed' >&2
+  exit 1
+fi
 if ! "$REQUIRED_SECRET_VALIDATOR" --env "$ENV_PATH" >/dev/null; then
   printf '%s\n' 'required-secret-completeness-failed' >&2
   exit 1
 fi
-ENV_SHA256_BEFORE="$(node --input-type=module - "$ENV_PATH" <<'NODE'
-import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
-
-process.stdout.write(createHash("sha256").update(readFileSync(process.argv[2])).digest("hex"));
-NODE
-)"
-node "$REPO_ROOT/scripts/alpha-ticker-stage-a-hosted/activation-record.mjs" \
-  --verify-qm-install --root "$HOSTED_ROOT"
-if ! "$QM_BIN" setup </dev/null >/dev/null 2>&1; then
-  printf '%s\n' 'qm-setup-validation-failed' >&2
+if ! node "$REPO_ROOT/scripts/alpha-ticker-stage-a-hosted/activation-record.mjs" \
+  --verify-qm-install --root "$HOSTED_ROOT"; then
+  printf '%s\n' 'pre-publish-qm-verification-failed' >&2
   exit 1
 fi
-ENV_SHA256_AFTER="$(node --input-type=module - "$ENV_PATH" <<'NODE'
+if ! "$QM_BIN" check; then
+  printf '%s\n' 'pre-publish-qm-check-failed' >&2
+  exit 1
+fi
+if ! ENV_SHA256_AFTER="$(node --input-type=module - "$ENV_PATH" <<'NODE'
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 
 process.stdout.write(createHash("sha256").update(readFileSync(process.argv[2])).digest("hex"));
 NODE
-)"
+)"; then
+  printf '%s\n' 'env-post-validation-hash-failed' >&2
+  exit 1
+fi
+if [ -z "$ENV_SHA256_AFTER" ] || [ "${#ENV_SHA256_AFTER}" -ne 64 ]; then
+  printf '%s\n' 'env-post-validation-hash-failed' >&2
+  exit 1
+fi
 if [ ! -f "$ENV_PATH" ] || [ -L "$ENV_PATH" ] || \
   [ "$(stat -f '%d:%i' "$ENV_PATH")" != "$ENV_DEVICE_INODE_BEFORE" ] || \
   [ "$(stat -f '%Lp' "$ENV_PATH")" != "600" ] || \
   [ "$ENV_SHA256_AFTER" != "$ENV_SHA256_BEFORE" ]; then
-  printf '%s\n' 'qm-setup-mutated-env' >&2
+  printf '%s\n' 'secret-validation-mutated-env' >&2
   exit 1
 fi
-if ! "$REQUIRED_SECRET_VALIDATOR" --env "$ENV_PATH" >/dev/null; then
-  printf '%s\n' 'required-secret-post-setup-validation-failed' >&2
+if ! git -C "$REPO_ROOT" check-ignore --quiet deploy/layers/alpha-ticker-stage-a-hosted/.env; then
+  printf '%s\n' 'post-validation-env-ignore-check-failed' >&2
   exit 1
 fi
-git -C "$REPO_ROOT" check-ignore --quiet deploy/layers/alpha-ticker-stage-a-hosted/.env
-node "$REPO_ROOT/scripts/alpha-ticker-stage-a-hosted/activation-record.mjs" \
-  --verify-qm-install --root "$HOSTED_ROOT"
-"$QM_BIN" check
-"$QM_BIN" sandbox publish
-"${EDITOR:?set EDITOR to a secure local inventory editor}" "$INVENTORY_PATH"
-chmod 600 "$INVENTORY_PATH"
-git -C "$REPO_ROOT" check-ignore --quiet .generated/alpha-ticker-stage-a-hosted/resource-inventory.json
-"$QM_BIN" check
-"$QM_BIN" plan
+if ! node "$REPO_ROOT/scripts/alpha-ticker-stage-a-hosted/activation-record.mjs" \
+  --verify-qm-install --root "$HOSTED_ROOT"; then
+  printf '%s\n' 'publish-qm-verification-failed' >&2
+  exit 1
+fi
+if ! "$QM_BIN" sandbox publish; then
+  printf '%s\n' 'sandbox-publication-failed' >&2
+  exit 1
+fi
+if ! "${EDITOR:?set EDITOR to a secure local inventory editor}" "$INVENTORY_PATH"; then
+  printf '%s\n' 'sandbox-inventory-update-failed' >&2
+  exit 1
+fi
+if ! chmod 600 "$INVENTORY_PATH"; then
+  exit 1
+fi
+if ! git -C "$REPO_ROOT" check-ignore --quiet .generated/alpha-ticker-stage-a-hosted/resource-inventory.json; then
+  printf '%s\n' 'sandbox-inventory-ignore-check-failed' >&2
+  exit 1
+fi
+if ! "$QM_BIN" check; then
+  printf '%s\n' 'post-publication-qm-check-failed' >&2
+  exit 1
+fi
+if ! "$QM_BIN" plan; then
+  printf '%s\n' 'post-publication-qm-plan-failed' >&2
+  exit 1
+fi
 ```
 
 The egress probe must first complete its silent authenticated positive canary, then print only `unsigned-deny: pass` and `signed-unapproved-host-deny: pass`. The committed sandbox image must be digest-pinned. Any unexpected output or capability blocks H2.
@@ -377,17 +437,38 @@ For the budget drill, freeze participant turns. If this is a fresh H3 shell, fir
 ```bash
 QCONFIG="$HOSTED_ROOT/qm.config.jsonc"
 DRILL_ROOT="$REPO_ROOT/.generated/alpha-ticker-stage-a-hosted"
+BUDGET_BOUNDARY_TEST_REL="test/alpha-ticker-stage-a-hosted-budget-boundary.test.ts"
+BUDGET_BOUNDARY_TEST="$REPO_ROOT/$BUDGET_BOUNDARY_TEST_REL"
 mkdir -p "$DRILL_ROOT"
 chmod 700 "$DRILL_ROOT"
 if [ "$(type -t run_reconciled_qm_up)" != "function" ]; then
   printf '%s\n' 'deployment-lifecycle-wrapper-missing' >&2
   exit 1
 fi
+if ! TRACKED_STATUS_PRE_BUDGET="$(git -C "$REPO_ROOT" status --porcelain --untracked-files=no)"; then
+  printf '%s\n' 'pre-budget-tracked-worktree-check-failed' >&2
+  exit 1
+fi
+if [ -n "$TRACKED_STATUS_PRE_BUDGET" ]; then
+  printf '%s\n' 'pre-budget-tracked-worktree-dirty' >&2
+  exit 1
+fi
+BUDGET_TEST_COMMITTED_HASH="$(git -C "$REPO_ROOT" rev-parse "HEAD:$BUDGET_BOUNDARY_TEST_REL" 2>/dev/null)" || \
+  BUDGET_TEST_COMMITTED_HASH=""
+BUDGET_TEST_CURRENT_HASH="$(git -C "$REPO_ROOT" hash-object "$BUDGET_BOUNDARY_TEST" 2>/dev/null)" || \
+  BUDGET_TEST_CURRENT_HASH=""
+if [ ! -f "$BUDGET_BOUNDARY_TEST" ] || [ -L "$BUDGET_BOUNDARY_TEST" ] || \
+  [ -z "$BUDGET_TEST_COMMITTED_HASH" ] || [ -z "$BUDGET_TEST_CURRENT_HASH" ] || \
+  [ "$BUDGET_TEST_COMMITTED_HASH" != "$BUDGET_TEST_CURRENT_HASH" ]; then
+  printf '%s\n' 'budget-boundary-test-integrity-failed' >&2
+  exit 1
+fi
 if ! node "$REPO_ROOT/scripts/alpha-ticker-stage-a-hosted/check-boundary.mjs"; then
   printf '%s\n' 'pre-budget-boundary-check-failed' >&2
   exit 1
 fi
-if ! node --test "$REPO_ROOT/test/alpha-ticker-stage-a-hosted-policy.test.ts" \
+if ! node --test "$REPO_ROOT/test/alpha-ticker-stage-a-hosted-budget-boundary.test.ts" \
+  "$REPO_ROOT/test/alpha-ticker-stage-a-hosted-policy.test.ts" \
   "$REPO_ROOT/test/alpha-ticker-stage-a-hosted-boundary.test.ts"; then
   printf '%s\n' 'pre-budget-policy-check-failed' >&2
   exit 1
@@ -480,12 +561,11 @@ if ! "$QM_BIN" status; then
 fi
 ```
 
-Only that successful mutation, reconciled core deployment, live check, and status readback constitute a verified zero-budget deployment. The denial probe has this exact operator contract:
+Only that successful mutation, reconciled core deployment, live check, and status readback constitute a verified zero-budget deployment. Provider-request exclusion uses a two-part proof: the pre-mutation executable boundary test throws if the harness/provider boundary is reached under a zero organization budget, and the deployed system must return the same exact refusal for the one live probe. The denial probe has this exact operator contract:
 
-1. In the authenticated `Admin > Metrics` view, select P1's pseudonymous personal scope and retain only a private temporary copy of the aggregate `anatomy.composite.modelCalls` object. Do not retain a scope label, identity, prompt, response, or provider content.
+1. Confirm the pre-mutation command ran `node --test "$REPO_ROOT/test/alpha-ticker-stage-a-hosted-budget-boundary.test.ts"` successfully in the same clean, verified checkout used for deployment. That test uses the exact probe and refusal text and throws if the harness/provider boundary is reached.
 2. In P1's existing synthetic evaluation conversation, submit exactly `STAGE_A_ZERO_BUDGET_DENIAL_PROBE` once. This is the one permitted synthetic denial probe.
 3. Require the turn to return the refusal reason exactly `budget exceeded ($0.00 of $0); try again later`. Any assistant output, provider content, different refusal, or successful turn fails the drill.
-4. Refresh the same aggregate metrics view and require the canonical JSON representation of `anatomy.composite.modelCalls` to be byte-for-byte unchanged. This is the mechanical confirmation that no model/provider request was recorded. Delete both temporary aggregate copies immediately after comparison.
 
 Run exactly one synthetic denial probe; it must be denied before any provider request. Record only the `h3-zero-budget-denial` pass/fail check. Do not run a second probe. No further turn is permitted until the original 45 configuration is restored and redeployed, reconciled, and revalidated. Regardless of the denial result, immediately restore the exact original bytes and complete the following guarded sequence before incident teardown or any other turn:
 

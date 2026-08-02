@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash, generateKeyPairSync } from "node:crypto";
 import { chmodSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -12,13 +13,16 @@ import { REQUIRED_SECRET_NAMES } from "../scripts/alpha-ticker-stage-a-hosted/va
 
 const validator = resolve("scripts/alpha-ticker-stage-a-hosted/validate-required-secrets.mjs");
 const deploymentRoot = resolve("deploy/layers/alpha-ticker-stage-a-hosted");
+const validSigningJwk = JSON.stringify(
+  generateKeyPairSync("ec", { namedCurve: "P-256" }).privateKey.export({ format: "jwk" }),
+);
 
 function validEntries(): Map<string, string> {
   const entries = new Map<string, string>([
     ["ADMIN_GRANTS", "admin@example.com:org_admin"],
     ["AUTH_ALLOWED_EMAILS", "admin@example.com,analyst@example.com"],
     ["AUTH_EMAIL_FROM", "Alpha Ticker <auth@example.com>"],
-    ["AUTH_SIGNING_JWK", '{"kty":"EC","crv":"P-256","d":"private","x":"public-x","y":"public-y"}'],
+    ["AUTH_SIGNING_JWK", validSigningJwk],
     ["FLY_SANDBOX_API_TOKEN", "fly-sandbox-token"],
     ["OPENAI_API_KEY", "sk-test-provider-key"],
     ["PUBLIC_API_URL", "https://alpha-ticker-stage-a-hosted-core.fly.dev"],
@@ -37,7 +41,7 @@ function validEntries(): Map<string, string> {
     "SKILL_SIGNING_SECRET",
   ];
   for (const [index, name] of distinctKeys.entries()) {
-    entries.set(name, `${name.toLowerCase()}-${String(index).padStart(2, "0")}-0123456789abcdef0123456789abcdef`);
+    entries.set(name, createHash("sha256").update(`${name}:${index}`).digest("hex"));
   }
   return entries;
 }
@@ -121,6 +125,10 @@ test("required-secret validator rejects placeholders, duplicates, and inconsiste
   const reused = validEntries();
   reused.set("AUTH_TOKEN_SECRET", reused.get("AUTH_CLIENT_SECRET")!);
   assertFixedFailure(serialize(reused));
+
+  const weakGenerated = validEntries();
+  weakGenerated.set("AUTH_TOKEN_SECRET", "a".repeat(63));
+  assertFixedFailure(serialize(weakGenerated));
 });
 
 test("required-secret validator rejects malformed structured values", () => {
@@ -129,6 +137,7 @@ test("required-secret validator rejects malformed structured values", () => {
     ["AUTH_ALLOWED_EMAILS", "not-an-email"],
     ["AUTH_EMAIL_FROM", "not-an-email"],
     ["AUTH_SIGNING_JWK", '{"kty":"RSA"}'],
+    ["AUTH_SIGNING_JWK", '{"kty":"EC","crv":"P-256","d":"private","x":"public-x","y":"public-y"}'],
     ["OPENAI_API_KEY", "provider-key"],
     ["PUBLIC_API_URL", "https://other.example.com"],
     ["SMTP_HOST", "smtp host"],
