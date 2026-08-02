@@ -1,0 +1,32 @@
+{
+  "stage": "A-hosted",
+  "dataClass": "public-synthetic-only",
+  "cloudMutation": "gated",
+  "modelBacked": true,
+  "liveAlphaPackets": false,
+  "productionCredentials": false,
+  "allowedTools": ["alpha-packet"],
+  "allowedSandboxControlPlaneHosts": ["alpha-ticker-stage-a-hosted-portal.fly.dev"],
+  "allowedSandboxExternalHosts": [],
+  "coreExternalDependencies": [
+    "openai-api",
+    "smtp-relay",
+    "fly-control-plane",
+    "fly-managed-postgres",
+    "tigris-object-storage"
+  ],
+  "allowedTickers": ["SYNTH"],
+  "allowedPortfolios": ["SYNTHETIC_NUCLEUS"],
+  "prohibitedCapabilities": [
+    "browser",
+    "connectors",
+    "published-apps",
+    "public-links",
+    "slack",
+    "telegram",
+    "github",
+    "database-access",
+    "brokerage",
+    "external-actions"
+  ]
+}
