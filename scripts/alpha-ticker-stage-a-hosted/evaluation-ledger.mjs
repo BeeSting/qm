@@ -44,8 +44,9 @@ const SCORE_RECORD_KEY_SET = new Set(SCORE_RECORD_KEYS);
 const REQUIRED_PAIRS = new Set(
   PARTICIPANTS.flatMap((participant) => WORKFLOWS.map((workflow) => `${participant}:${workflow}`)),
 );
-const MICRODOLLARS_PER_USD = 1_000_000;
-const COST_LIMIT_MICRODOLLARS = 45_000_000;
+const COST_LIMIT_USD = 45n;
+const COST_OUTPUT_DECIMAL_PLACES = 6;
+const MAX_DECIMAL_SCALE_SPAN = 1_000;
 const MAX_LEDGER_BYTES = 64 * 1024;
 const MAX_LEDGER_LINE_BYTES = 16 * 1024;
 const MAX_LEDGER_RECORDS = 15;
@@ -73,13 +74,7 @@ function rejectForbiddenKeys(value, seen = new WeakSet()) {
     if (FORBIDDEN_KEYS.has(key)) fail(key);
 
     const descriptor = Object.getOwnPropertyDescriptor(value, key);
-    if (
-      descriptor === undefined ||
-      !("value" in descriptor) ||
-      !descriptor.enumerable ||
-      !descriptor.writable ||
-      !descriptor.configurable
-    ) {
+    if (descriptor === undefined || !("value" in descriptor) || !descriptor.enumerable) {
       fail(key);
     }
     rejectForbiddenKeys(descriptor.value, seen);
@@ -107,14 +102,55 @@ function assertNonNegativeNumber(record, field) {
   }
 }
 
-function costToMicrodollars(value, field = "costUsd") {
-  const fixed = value.toFixed(6);
-  if (!/^(?:0|[1-9]\d*)\.\d{6}$/.test(fixed) || Number(fixed) !== value) fail(field);
+function powerOfTen(exponent) {
+  if (!Number.isSafeInteger(exponent) || exponent < 0 || exponent > MAX_DECIMAL_SCALE_SPAN) {
+    fail("totalCostUsd");
+  }
+  return 10n ** BigInt(exponent);
+}
 
-  const [whole, fraction] = fixed.split(".");
-  const microdollars = BigInt(whole) * BigInt(MICRODOLLARS_PER_USD) + BigInt(fraction);
-  if (microdollars > BigInt(Number.MAX_SAFE_INTEGER)) fail(field);
-  return Number(microdollars);
+function exactDecimalFromNumber(value) {
+  const match = /^(\d+)(?:\.(\d+))?(?:e([+-]?\d+))?$/.exec(value.toString());
+  if (match === null) fail("totalCostUsd");
+
+  const integer = match[1];
+  const fraction = match[2] ?? "";
+  const exponent = Number(match[3] ?? "0");
+  let coefficient = BigInt(`${integer}${fraction}`);
+  let scale = fraction.length - exponent;
+
+  if (coefficient === 0n) return { coefficient, scale: 0 };
+  while (scale > 0 && coefficient % 10n === 0n) {
+    coefficient /= 10n;
+    scale -= 1;
+  }
+  return { coefficient, scale };
+}
+
+function sumExactCosts(records) {
+  const values = records.map((record) => exactDecimalFromNumber(record.costUsd));
+  const scale = Math.max(0, ...values.map((value) => value.scale));
+  const coefficient = values.reduce((total, value) => total + value.coefficient * powerOfTen(scale - value.scale), 0n);
+  return { coefficient, scale };
+}
+
+function roundExactDecimal(coefficient, scale, decimalPlaces) {
+  if (scale <= decimalPlaces) {
+    return coefficient * powerOfTen(decimalPlaces - scale);
+  }
+
+  const divisor = powerOfTen(scale - decimalPlaces);
+  const quotient = coefficient / divisor;
+  const remainder = coefficient % divisor;
+  return quotient + (remainder * 2n >= divisor ? 1n : 0n);
+}
+
+function fixedPointBigIntToNumber(coefficient, decimalPlaces) {
+  const digits = coefficient.toString().padStart(decimalPlaces + 1, "0");
+  const splitAt = digits.length - decimalPlaces;
+  const value = Number(`${digits.slice(0, splitAt)}.${digits.slice(splitAt)}`);
+  if (!Number.isFinite(value)) fail("totalCostUsd");
+  return value;
 }
 
 export function assertScoreRecord(record) {
@@ -144,7 +180,6 @@ export function assertScoreRecord(record) {
   assertNonNegativeNumber(record, "inputTokens");
   assertNonNegativeNumber(record, "outputTokens");
   assertNonNegativeNumber(record, "costUsd");
-  costToMicrodollars(record.costUsd);
   if (record.model !== "gpt-5.6-terra") fail("model");
   assertNonEmptyString(record, "deploymentRevision");
   assertNonEmptyString(record, "incidentCategory");
@@ -156,7 +191,10 @@ function median(values) {
   if (values.length === 0) return null;
   const sorted = [...values].sort((left, right) => left - right);
   const middle = Math.floor(sorted.length / 2);
-  return sorted.length % 2 === 0 ? (sorted[middle - 1] + sorted[middle]) / 2 : sorted[middle];
+  if (sorted.length % 2 !== 0) return sorted[middle];
+  const lower = sorted[middle - 1];
+  const upper = sorted[middle];
+  return lower + (upper - lower) / 2;
 }
 
 export function summarizeScoreRecords(records) {
@@ -167,7 +205,6 @@ export function summarizeScoreRecords(records) {
   const workflowParticipantPairs = new Set();
   let disclosurePasses = 0;
   let acceptedWithMinorOrLess = 0;
-  let totalCostMicrodollars = 0;
   let incidentCount = 0;
   const usefulness = [];
   const factualConsistency = [];
@@ -195,15 +232,14 @@ export function summarizeScoreRecords(records) {
     usefulness.push(record.usefulness);
     factualConsistency.push(record.factualConsistency);
     elapsedMs.push(record.elapsedMs);
-    const recordCostMicrodollars = costToMicrodollars(record.costUsd);
-    if (recordCostMicrodollars > Number.MAX_SAFE_INTEGER - totalCostMicrodollars) {
-      fail("totalCostUsd");
-    }
-    totalCostMicrodollars += recordCostMicrodollars;
     if (record.incidentCategory !== "none") incidentCount += 1;
   }
   if (records.length > MAX_LEDGER_RECORDS) fail("sampleSize");
 
+  const totalCost = sumExactCosts(records);
+  const roundedCost = roundExactDecimal(totalCost.coefficient, totalCost.scale, COST_OUTPUT_DECIMAL_PLACES);
+  const totalCostUsd = fixedPointBigIntToNumber(roundedCost, COST_OUTPUT_DECIMAL_PLACES);
+  const costWithinLimit = totalCost.coefficient <= COST_LIMIT_USD * powerOfTen(totalCost.scale);
   const medianUsefulness = median(usefulness);
   const medianFactualConsistency = median(factualConsistency);
   const medianElapsedMs = median(elapsedMs);
@@ -220,7 +256,7 @@ export function summarizeScoreRecords(records) {
     medianFactualConsistency >= 4 &&
     medianElapsedMs !== null &&
     medianElapsedMs <= 90_000 &&
-    totalCostMicrodollars <= COST_LIMIT_MICRODOLLARS &&
+    costWithinLimit &&
     incidentCount === 0;
 
   return {
@@ -230,7 +266,7 @@ export function summarizeScoreRecords(records) {
     medianUsefulness,
     medianFactualConsistency,
     medianElapsedMs,
-    totalCostUsd: totalCostMicrodollars / MICRODOLLARS_PER_USD,
+    totalCostUsd,
     incidentCount,
     pass,
   };

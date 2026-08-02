@@ -176,14 +176,15 @@ test("rejects hidden, symbolic, accessor, and prototype-based record surfaces wi
   assert.throws(() => assertScoreRecord(accessor), /outputId/);
   assert.equal(getterCalled, false);
 
-  const nonstandardDescriptor = cloneValid();
-  Object.defineProperty(nonstandardDescriptor, "outputId", {
+  const readOnlyDescriptor = cloneValid();
+  Object.defineProperty(readOnlyDescriptor, "outputId", {
     value: valid.outputId,
     enumerable: true,
     writable: false,
-    configurable: true,
+    configurable: false,
   });
-  assert.throws(() => assertScoreRecord(nonstandardDescriptor), /outputId/);
+  assert.doesNotThrow(() => assertScoreRecord(readOnlyDescriptor));
+  assert.doesNotThrow(() => assertScoreRecord(Object.freeze(cloneValid())));
 
   const customPrototype = Object.assign(Object.create({ inherited: true }), valid);
   assert.throws(() => assertScoreRecord(customPrototype), /record/);
@@ -248,32 +249,47 @@ test("enforces finite non-negative numeric telemetry and accepts fractions", () 
   }
 
   assert.doesNotThrow(() => assertScoreRecord(cloneValid({ costUsd: 0.000001 })));
-  assert.throws(() => assertScoreRecord(cloneValid({ costUsd: 0.0000015 })), /costUsd/);
-  assert.throws(() => assertScoreRecord(cloneValid({ costUsd: Number.MAX_VALUE })), /costUsd/);
+  assert.doesNotThrow(() => assertScoreRecord(cloneValid({ costUsd: 0.0000015 })));
+  assert.doesNotThrow(() => assertScoreRecord(cloneValid({ costUsd: Number.MAX_VALUE })));
 });
 
-test("uses exact integer microdollars for both reporting and the 45 dollar gate", () => {
+test("uses exact decimal costs for the gate and rounds the aggregate to six places once", () => {
   const exactlyAtGate = completeSample((record) => {
     record.costUsd = 3;
   });
+  exactlyAtGate[0]!.costUsd = 2.9999995;
+  exactlyAtGate[1]!.costUsd = 3.0000005;
   const passing = summarizeScoreRecords(exactlyAtGate);
   assert.equal(passing.totalCostUsd, 45);
   assert.equal(passing.pass, true);
 
-  const oneMicrodollarOver = completeSample((record) => {
+  const halfMicrodollarOver = completeSample((record) => {
     record.costUsd = 3;
   });
-  oneMicrodollarOver[0]!.costUsd = 3.000001;
-  const failing = summarizeScoreRecords(oneMicrodollarOver);
+  halfMicrodollarOver[0]!.costUsd = 3.0000005;
+  const failing = summarizeScoreRecords(halfMicrodollarOver);
   assert.equal(failing.totalCostUsd, 45.000001);
   assert.equal(failing.pass, false);
+
+  const canonicalDecimalSum = completeSample((record) => {
+    record.costUsd = 0;
+  });
+  canonicalDecimalSum[0]!.costUsd = 0.1;
+  canonicalDecimalSum[1]!.costUsd = 0.2;
+  assert.equal(summarizeScoreRecords(canonicalDecimalSum).totalCostUsd, 0.3);
+
+  const subMicrodollar = completeSample((record) => {
+    record.costUsd = 0;
+  });
+  subMicrodollar[0]!.costUsd = 0.0000015;
+  assert.equal(summarizeScoreRecords(subMicrodollar).totalCostUsd, 0.000002);
 });
 
-test("rejects empty aggregates and exact-microdollar aggregate overflow without null or Infinity", () => {
+test("rejects empty aggregates and unrepresentable cost totals without null or Infinity", () => {
   assert.throws(() => summarizeScoreRecords([]), /sampleSize/);
 
   const overflow = completeSample((record, index) => {
-    record.costUsd = index < 3 ? 4_000_000_000 : 0;
+    record.costUsd = index < 2 ? Number.MAX_VALUE : 0;
   });
   assert.throws(
     () => summarizeScoreRecords(overflow),
@@ -282,6 +298,16 @@ test("rejects empty aggregates and exact-microdollar aggregate overflow without 
 
   const serialized = JSON.stringify(summarizeScoreRecords(completeSample()));
   assert.doesNotMatch(serialized, /null|Infinity/);
+});
+
+test("uses an overflow-safe even median midpoint for maximum finite telemetry", () => {
+  const records = completeSample().slice(0, 14);
+  for (const record of records) record.elapsedMs = Number.MAX_VALUE;
+
+  const summary = summarizeScoreRecords(records);
+  assert.equal(summary.medianElapsedMs, Number.MAX_VALUE);
+  assert.equal(summary.pass, false);
+  assert.doesNotMatch(JSON.stringify(summary), /null|Infinity/);
 });
 
 test("summarizes only aggregate fields and passes a complete required sample", () => {
@@ -383,7 +409,7 @@ test("fails each disclosure, quality, latency, cost, and incident threshold inde
   }
 });
 
-test("computes even medians for an incomplete unique sample and exact microdollar cost", () => {
+test("computes even medians for an incomplete unique sample and exact aggregate cost", () => {
   const records = completeSample().slice(0, 14);
   records[0]!.usefulness = 3;
   records[13]!.usefulness = 5;
