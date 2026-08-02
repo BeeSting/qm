@@ -121,7 +121,7 @@ export function scanDirectory(root) {
 }
 
 export function scanStagedDeploymentDiff(repoRoot = process.cwd(), deploymentRoot = DEFAULT_ROOT) {
-  let diff = "";
+  let diff;
   try {
     diff = execFileSync("git", ["diff", "--cached", "--unified=0", "--no-color", "--", deploymentRoot], {
       cwd: repoRoot,
