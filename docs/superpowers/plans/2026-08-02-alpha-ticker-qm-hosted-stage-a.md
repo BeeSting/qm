@@ -401,14 +401,14 @@ kill_timeout = "10s"
 
 - [ ] **Step 4: Prove the contract and existing proxy implementation**
 
-Implement `probe-egress.mjs` as a content-minimized live probe. It must read `CAPABILITY_SECRET` directly from a mode-`0600` env file, mint a short-lived `EGRESS_PROXY_AUD` capability with `egress: { allowedHosts: ["alpha-ticker-stage-a-hosted-portal.fly.dev"], deniedHosts: [] }`, and issue two HTTPS `CONNECT` requests to the supplied proxy and host: one unsigned and one with the signed token in `Proxy-Authorization`. Neither the secret nor token may appear on argv, in process output, or in evidence. It prints only:
+Implement `probe-egress.mjs` as a content-minimized live probe. It must read `CAPABILITY_SECRET` directly from a mode-`0600` env file and issue three bounded HTTPS `CONNECT` checks to the supplied proxy and host. First, mint a short-lived `EGRESS_PROXY_AUD` capability whose `allowedHosts` contains exactly the supplied canary host, require `CONNECT 200`, and immediately destroy the tunnel without application data. Then require an unsigned CONNECT and a CONNECT signed by a separate short-lived capability with `egress: { allowedHosts: ["alpha-ticker-stage-a-hosted-portal.fly.dev"], deniedHosts: [] }` to be denied. Neither the secret nor either token may appear on argv, in process output, or in evidence. The successful canary check stays silent; the probe prints only:
 
 ```text
 unsigned-deny: pass
 signed-unapproved-host-deny: pass
 ```
 
-Unit-test the request path against a local test server before using it on Fly.
+Unit-test all three CONNECT paths, successful-tunnel teardown, bounded timeout cleanup, and hardened env-file rejection against local test servers before using the probe on Fly. Only the two denial pass lines may be public output.
 
 ```bash
 node --test test/alpha-ticker-stage-a-hosted-egress.test.ts test/egress-proxy-config.test.ts
@@ -1077,16 +1077,16 @@ fly deploy . \
   --yes
 ```
 
-- [ ] **Step 4: Prove unsigned and signed-unapproved-host denial before deploying QM**
+- [ ] **Step 4: Prove the authenticated canary positive control and both denials before deploying QM**
 
 ```bash
-node scripts/alpha-ticker-stage-a-hosted/probe-egress.mjs \
+node -- scripts/alpha-ticker-stage-a-hosted/probe-egress.mjs \
   --proxy https://alpha-ticker-stage-a-egress.fly.dev \
   --env-file deploy/layers/alpha-ticker-stage-a-hosted/.env \
   --host example.com
 ```
 
-Expected: exactly the two pass lines defined in Task 3. Any successful request is an immediate no-go.
+Expected: the authenticated canary CONNECT succeeds first, then the unsigned and signed-unapproved-host CONNECTs are denied. Output remains exactly the two denial pass lines defined in Task 3; a failed canary or successful denial request is an immediate no-go.
 
 - [ ] **Step 5: Create and verify the sandbox registry app**
 

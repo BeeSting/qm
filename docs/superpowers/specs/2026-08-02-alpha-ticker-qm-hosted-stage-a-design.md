@@ -152,7 +152,7 @@ H0 may create the dedicated provider project and its bounded SMTP grant, but it 
 ### Gate H1: Immutable sandbox publication
 
 - Deploy the dedicated egress proxy with tokenless access set to `deny` and the same capability-signing secret used by the QM core.
-- Prove an unsigned request and a signed request for an unapproved host are both denied.
+- Prove an authenticated canary CONNECT succeeds before an unsigned request and a signed request for an unapproved host are both denied.
 - Create the dedicated Fly sandbox registry app.
 - Publish the Stage A sandbox image once.
 - Record and verify its immutable digest.
