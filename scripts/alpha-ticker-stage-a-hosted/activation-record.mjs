@@ -459,6 +459,16 @@ function signalProcessGroup(child, signal) {
   }
 }
 
+function processGroupExists(child) {
+  if (process.platform === "win32") return child.exitCode === null;
+  try {
+    process.kill(-child.pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code !== "ESRCH";
+  }
+}
+
 async function runTimedCommand(args) {
   if (args.length < 4 || args[0] !== "--run-timeout" || args[2] !== "--") return false;
   const timeoutMs = Number(args[1]);
@@ -472,21 +482,56 @@ async function runTimedCommand(args) {
     detached: process.platform !== "win32",
   });
   let timedOut = false;
-  let hardKillTimer;
   const exitCode = await new Promise((complete) => {
-    const timeoutTimer = setTimeout(() => {
-      timedOut = true;
-      hardKillTimer = setTimeout(() => signalProcessGroup(child, "SIGKILL"), 250);
-      signalProcessGroup(child, "SIGTERM");
-    }, timeoutMs);
+    let completed = false;
+    let leaderFinished = false;
+    let leaderExitCode = 1;
+    let hardKillSent = false;
+    let hardKillTimer;
+    let settlePollTimer;
+    let settleDeadlineTimer;
 
-    const finish = (code) => {
+    const settle = (code) => {
+      if (completed) return;
+      completed = true;
       clearTimeout(timeoutTimer);
       if (hardKillTimer) clearTimeout(hardKillTimer);
-      complete(timedOut ? 124 : code);
+      if (settlePollTimer) clearTimeout(settlePollTimer);
+      if (settleDeadlineTimer) clearTimeout(settleDeadlineTimer);
+      complete(code);
     };
-    child.once("error", () => finish(1));
-    child.once("exit", (code) => finish(Number.isInteger(code) ? code : 1));
+
+    const pollForProcessGroupExit = () => {
+      if (leaderFinished && !processGroupExists(child)) {
+        settle(124);
+        return;
+      }
+      settlePollTimer = setTimeout(pollForProcessGroupExit, 25);
+    };
+
+    const timeoutTimer = setTimeout(() => {
+      timedOut = true;
+      signalProcessGroup(child, "SIGTERM");
+      hardKillTimer = setTimeout(() => {
+        hardKillSent = true;
+        signalProcessGroup(child, "SIGKILL");
+        settleDeadlineTimer = setTimeout(() => {
+          signalProcessGroup(child, "SIGKILL");
+          child.unref();
+          settle(124);
+        }, 1000);
+        pollForProcessGroupExit();
+      }, 250);
+    }, timeoutMs);
+
+    const recordLeaderExit = (code) => {
+      leaderFinished = true;
+      leaderExitCode = code;
+      if (!timedOut) settle(leaderExitCode);
+      else if (hardKillSent && !processGroupExists(child)) settle(124);
+    };
+    child.once("error", () => recordLeaderExit(1));
+    child.once("exit", (code) => recordLeaderExit(Number.isInteger(code) ? code : 1));
   });
   process.exitCode = exitCode;
   return true;

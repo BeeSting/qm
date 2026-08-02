@@ -591,6 +591,56 @@ test("timeout helper kills a SIGTERM-ignoring process group by the hard deadline
   }
 });
 
+test("timeout helper kills descendants after a SIGTERM-responsive leader exits", () => {
+  const root = mkdtempSync(join(tmpdir(), "qm-timeout-descendant-cleanup-"));
+  const processFile = join(root, "processes.txt");
+  let leaderPid: number | undefined;
+  try {
+    const command = join(root, "leader-exits-descendant-ignores.sh");
+    writeShim(
+      command,
+      `process_file=$1
+trap 'exit 0' TERM
+(
+  trap '' TERM
+  while :; do sleep 10; done
+) &
+descendant_pid=$!
+printf '%s %s\n' "$$" "$descendant_pid" > "$process_file"
+wait "$descendant_pid"
+`,
+    );
+
+    const startedAt = Date.now();
+    const result = spawnSync(
+      process.execPath,
+      [activationScript, "--run-timeout", "1000", "--", command, processFile],
+      {
+        stdio: "ignore",
+        timeout: 5_000,
+        killSignal: "SIGKILL",
+      },
+    );
+    const elapsedMs = Date.now() - startedAt;
+    const [leaderText, descendantText] = readFileSync(processFile, "utf8").trim().split(" ");
+    leaderPid = Number(leaderText);
+    const descendantPid = Number(descendantText);
+
+    assert.equal(result.status, 124);
+    assert.ok(elapsedMs < 3_000, `timeout helper exceeded hard deadline: ${elapsedMs}ms`);
+    assert.throws(() => process.kill(descendantPid, 0), { code: "ESRCH" });
+  } finally {
+    if (leaderPid !== undefined) {
+      try {
+        process.kill(-leaderPid, "SIGKILL");
+      } catch {
+        // The detached process group is expected to have been removed already.
+      }
+    }
+    rmSync(root, { force: true, recursive: true });
+  }
+});
+
 test("hosted preflight passes with only named status output", () => {
   const result = createPreflightScenario();
   try {
