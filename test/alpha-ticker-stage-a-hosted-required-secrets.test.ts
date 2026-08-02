@@ -7,9 +7,14 @@ import { join, resolve } from "node:path";
 import { test } from "node:test";
 
 import { loadConfigAt } from "../deploy/layers/alpha-ticker-stage-a-hosted/node_modules/@yc-software/qm/dist/src/config.js";
-import { computedSecrets } from "../deploy/layers/alpha-ticker-stage-a-hosted/node_modules/@yc-software/qm/dist/src/secrets.js";
+import {
+  computedSecrets,
+  MINT_JWK,
+  MINT_LOCALLY,
+} from "../deploy/layers/alpha-ticker-stage-a-hosted/node_modules/@yc-software/qm/dist/src/secrets.js";
 // @ts-expect-error -- the committed validator is an .mjs CLI without a separate declaration file.
-import { REQUIRED_SECRET_NAMES } from "../scripts/alpha-ticker-stage-a-hosted/validate-required-secrets.mjs";
+const contract = await import("../scripts/alpha-ticker-stage-a-hosted/validate-required-secrets.mjs");
+const { GENERATED_SECRET_NAMES, REQUIRED_SECRET_NAMES } = contract;
 
 const validator = resolve("scripts/alpha-ticker-stage-a-hosted/validate-required-secrets.mjs");
 const deploymentRoot = resolve("deploy/layers/alpha-ticker-stage-a-hosted");
@@ -50,7 +55,7 @@ function serialize(entries: Map<string, string>): string {
   return `${[...entries].map(([name, value]) => `${name}=${value}`).join("\n")}\n`;
 }
 
-function runValidator(content: string, options: { mode?: number; symlink?: boolean } = {}) {
+function runValidator(content: string, options: { mode?: number; symlink?: boolean; externalOnly?: boolean } = {}) {
   const root = mkdtempSync(join(tmpdir(), "qm-required-secrets-"));
   const envPath = join(root, ".env");
   const targetPath = join(root, "target.env");
@@ -59,11 +64,15 @@ function runValidator(content: string, options: { mode?: number; symlink?: boole
   if (options.symlink) symlinkSync(targetPath, envPath);
   else writeFileSync(envPath, content, { mode: options.mode ?? 0o600 });
   if (!options.symlink) chmodSync(envPath, options.mode ?? 0o600);
-  const result = spawnSync(process.execPath, [validator, "--env", envPath], {
-    cwd: root,
-    encoding: "utf8",
-    timeout: 5_000,
-  });
+  const result = spawnSync(
+    process.execPath,
+    [validator, ...(options.externalOnly ? ["--external-only"] : []), "--env", envPath],
+    {
+      cwd: root,
+      encoding: "utf8",
+      timeout: 5_000,
+    },
+  );
   return { result, cleanup: () => rmSync(root, { recursive: true, force: true }) };
 }
 
@@ -89,6 +98,42 @@ test("required-secret contract matches the pinned QM configuration", () => {
     .map((secret) => secret.name)
     .sort();
   assert.deepEqual([...REQUIRED_SECRET_NAMES], required);
+  const generated = computedSecrets(config)
+    .filter(
+      (secret) =>
+        secret.managedBy === "operator" &&
+        secret.required &&
+        (secret.generate === MINT_LOCALLY || secret.generate === MINT_JWK),
+    )
+    .map((secret) => secret.name)
+    .sort();
+  assert.deepEqual([...GENERATED_SECRET_NAMES].sort(), generated);
+});
+
+test("external-only validation requires independent identity and provider values before setup", () => {
+  const entries = validEntries();
+  for (const name of GENERATED_SECRET_NAMES) entries.delete(name);
+  const accepted = runValidator(serialize(entries), { externalOnly: true });
+  try {
+    assert.equal(accepted.result.status, 0, accepted.result.stderr);
+    assert.equal(accepted.result.stdout, "external-secrets: pass\n");
+    assert.equal(accepted.result.stderr, "");
+  } finally {
+    accepted.cleanup();
+  }
+
+  for (const name of ["ADMIN_GRANTS", "AUTH_ALLOWED_EMAILS", "FLY_SANDBOX_API_TOKEN", "OPENAI_API_KEY"]) {
+    const missing = new Map(entries);
+    missing.delete(name);
+    const rejected = runValidator(serialize(missing), { externalOnly: true });
+    try {
+      assert.notEqual(rejected.result.status, 0);
+      assert.equal(rejected.result.stdout, "");
+      assert.equal(rejected.result.stderr, "external-secrets: fail\n");
+    } finally {
+      rejected.cleanup();
+    }
+  }
 });
 
 test("required-secret validator accepts a complete independent secret set", () => {

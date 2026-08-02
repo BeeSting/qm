@@ -214,6 +214,8 @@ test("H0 defers secret completion and H1 uses guarded TTY setup before immutable
       "secure in-place local editor",
       "exact operator-secret set implied by the pinned QM configuration",
       "cryptographically strong local secrets and the P-256 signing JWK",
+      'if ! "$REQUIRED_SECRET_VALIDATOR" --external-only --env "$ENV_PATH" >/dev/null; then',
+      "external-secret-preflight-failed",
       'if ! "$QM_BIN" setup; then',
       "qm-interactive-setup-failed",
       "setup-file-integrity-failed",
@@ -245,6 +247,9 @@ test("H0 defers secret completion and H1 uses guarded TTY setup before immutable
   assert.doesNotMatch(h1, /^\s*"\$QM_BIN" setup|^\s*qm setup\b/m);
   assert.doesNotMatch(runbook, /^\s*"\$QM_BIN" setup|^\s*qm setup\b/m);
   const tokenEditor = h1.indexOf('"${EDITOR:?set EDITOR to a secure in-place local editor}" "$ENV_PATH"');
+  const externalValidator = h1.indexOf(
+    'if ! "$REQUIRED_SECRET_VALIDATOR" --external-only --env "$ENV_PATH" >/dev/null; then',
+  );
   const setup = h1.indexOf('if ! "$QM_BIN" setup; then');
   const validator = h1.indexOf('if ! "$REQUIRED_SECRET_VALIDATOR" --env "$ENV_PATH" >/dev/null; then');
   const preHash = h1.indexOf("ENV_SHA256_BEFORE");
@@ -253,7 +258,8 @@ test("H0 defers secret completion and H1 uses guarded TTY setup before immutable
   const immutable = h1.indexOf("secret-validation-mutated-env", postHash);
   assert.ok(
     tokenEditor >= 0 &&
-      tokenEditor < setup &&
+      tokenEditor < externalValidator &&
+      externalValidator < setup &&
       setup < preHash &&
       preHash < validator &&
       validator < check &&

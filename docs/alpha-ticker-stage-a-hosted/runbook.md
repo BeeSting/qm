@@ -151,7 +151,7 @@ fly apps create alpha-ticker-stage-a-hosted-sandboxes --org personal
 
 Pause again before secret completion or publication. Append only the newly created sandbox app to the approved `apps` list, re-run the mode-`0600` and ignore checks, and leave `sandboxRegistry` null until publication returns its separate immutable registry identifier. After publication, capture that registry identifier before planning. A partial inventory may contain only resources confirmed to exist; it must never contain placeholders or expected-but-uncreated resources.
 
-Enter `FLY_SANDBOX_API_TOKEN` and every other externally sourced value directly into the existing `.env` with a secure in-place local editor; do not pass any value in a command, shell history, or terminal output. Both independent identity lists must already be present. The committed required-secret validator complements the interactive setup wizard: pinned QM 0.1.4 must run once in the attached operator TTY so it can generate the eight independent 32-byte hexadecimal secrets and the P-256 private signing JWK using its local cryptographic generators. If the wizard prompts for any non-generated value, abort with Ctrl-C and stop rather than entering it through an unexpected path. The wizard output may show secret names but must not show or retain values or identities.
+Enter `FLY_SANDBOX_API_TOKEN` and every other externally sourced value directly into the existing `.env` with a secure in-place local editor; do not pass any value in a command, shell history, or terminal output. Both independent identity lists must already be present. Before setup, the committed validator's silent external-only mode must prove every externally sourced value and both independent identity lists are present and structurally valid. This prevents pinned QM from entering its identity-derivation branch or printing derived identities. The committed required-secret validator complements the interactive setup wizard: pinned QM 0.1.4 must run once in the attached operator TTY so it can generate the eight independent 32-byte hexadecimal secrets and the P-256 private signing JWK using its local cryptographic generators. If the wizard prompts for any non-generated value despite the preflight, abort with Ctrl-C and stop. The wizard output may show secret names but must not show or retain values or identities.
 
 After setup, reassert the same inode, mode, and ignore protections. The validator proves the exact operator-secret set implied by the pinned QM configuration, requires `ADMIN_GRANTS` and `AUTH_ALLOWED_EMAILS` to be independently present, requires the cryptographically strong local secrets and the P-256 signing JWK to be importable, and emits no value or identity. Prove the `.env` inode, mode, and bytes remain identical across required-secret validation and `qm check`; every hash and QM operation is fail closed and any difference emits only a fixed marker and stops. Then publish and plan:
 
@@ -184,6 +184,10 @@ if [ ! -f "$REQUIRED_SECRET_VALIDATOR" ] || [ -L "$REQUIRED_SECRET_VALIDATOR" ] 
   [ ! -x "$REQUIRED_SECRET_VALIDATOR" ] || [ -z "$VALIDATOR_COMMITTED_HASH" ] || \
   [ -z "$VALIDATOR_CURRENT_HASH" ] || [ "$VALIDATOR_COMMITTED_HASH" != "$VALIDATOR_CURRENT_HASH" ]; then
   printf '%s\n' 'required-secret-validator-integrity-failed' >&2
+  exit 1
+fi
+if ! "$REQUIRED_SECRET_VALIDATOR" --external-only --env "$ENV_PATH" >/dev/null; then
+  printf '%s\n' 'external-secret-preflight-failed' >&2
   exit 1
 fi
 if ! node "$REPO_ROOT/scripts/alpha-ticker-stage-a-hosted/activation-record.mjs" \

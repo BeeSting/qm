@@ -43,6 +43,11 @@ const DISTINCT_SECRET_NAMES = Object.freeze([
   "SKILL_SIGNING_SECRET",
 ]);
 
+export const GENERATED_SECRET_NAMES = Object.freeze([...DISTINCT_SECRET_NAMES, "AUTH_SIGNING_JWK"]);
+const EXTERNAL_SECRET_NAMES = Object.freeze(
+  REQUIRED_SECRET_NAMES.filter((name) => !GENERATED_SECRET_NAMES.includes(name)),
+);
+
 class ValidationError extends Error {}
 
 function invalid() {
@@ -154,10 +159,7 @@ function validateSigningJwk(value) {
   }
 }
 
-export function assertRequiredSecrets(source) {
-  const values = parseEnv(source);
-  for (const name of REQUIRED_SECRET_NAMES) requireValue(values, name);
-
+function validateExternalValues(values) {
   const adminEmails = parseAdminEmails(requireValue(values, "ADMIN_GRANTS"));
   const allowedEmails = parseEmailList(requireValue(values, "AUTH_ALLOWED_EMAILS"));
   if (![...adminEmails].every((email) => allowedEmails.has(email))) invalid();
@@ -165,11 +167,22 @@ export function assertRequiredSecrets(source) {
   const from = requireValue(values, "AUTH_EMAIL_FROM");
   const bracketed = /<([^<>]+)>$/.exec(from);
   if (!EMAIL_PATTERN.test((bracketed?.[1] ?? from).trim())) invalid();
-  validateSigningJwk(requireValue(values, "AUTH_SIGNING_JWK"));
-
   if (!requireValue(values, "OPENAI_API_KEY").startsWith("sk-")) invalid();
   if (requireValue(values, "PUBLIC_API_URL") !== EXPECTED_PUBLIC_API_URL) invalid();
   if (!SMTP_HOST_PATTERN.test(requireValue(values, "SMTP_HOST"))) invalid();
+}
+
+export function assertExternalSecrets(source) {
+  const values = parseEnv(source);
+  for (const name of EXTERNAL_SECRET_NAMES) requireValue(values, name);
+  validateExternalValues(values);
+}
+
+export function assertRequiredSecrets(source) {
+  const values = parseEnv(source);
+  for (const name of REQUIRED_SECRET_NAMES) requireValue(values, name);
+  validateExternalValues(values);
+  validateSigningJwk(requireValue(values, "AUTH_SIGNING_JWK"));
 
   const distinctValues = DISTINCT_SECRET_NAMES.map((name) => requireValue(values, name));
   if (
@@ -188,11 +201,20 @@ function isDirectExecution(argvEntry) {
 function runCli() {
   try {
     const args = process.argv.slice(2);
-    if (args.length !== 2 || args[0] !== "--env" || !args[1]) invalid();
-    assertRequiredSecrets(readPrivateEnv(args[1]));
-    process.stdout.write("required-secrets: pass\n");
+    const externalOnly = args[0] === "--external-only";
+    const offset = externalOnly ? 1 : 0;
+    if (args.length !== offset + 2 || args[offset] !== "--env" || !args[offset + 1]) invalid();
+    const source = readPrivateEnv(args[offset + 1]);
+    if (externalOnly) {
+      assertExternalSecrets(source);
+      process.stdout.write("external-secrets: pass\n");
+    } else {
+      assertRequiredSecrets(source);
+      process.stdout.write("required-secrets: pass\n");
+    }
   } catch {
-    process.stderr.write("required-secrets: fail\n");
+    const externalOnly = process.argv.slice(2)[0] === "--external-only";
+    process.stderr.write(externalOnly ? "external-secrets: fail\n" : "required-secrets: fail\n");
     process.exitCode = 1;
   }
 }
