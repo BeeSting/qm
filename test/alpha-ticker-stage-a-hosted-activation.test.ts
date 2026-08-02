@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { test } from "node:test";
@@ -13,6 +22,8 @@ const activationRelativePath = ".generated/alpha-ticker-stage-a-hosted/activatio
 const missingImagePin =
   '"sandbox.app" is set but no sandbox layer image is pinned; run `qm sandbox publish` to build and record the digest-pinned "sandbox.image" agents boot from';
 const sentinel = "DO-NOT-LEAK-IDENTITY-OR-ENV";
+const envSecretName = "OPENAI_API_KEY";
+const envSecretValue = "sk-test-env-value-that-must-never-leak";
 
 const acceptedRecord = {
   sponsorApproved: true,
@@ -39,11 +50,16 @@ interface PreflightScenario {
   boundaryExit?: number;
   buildxExit?: number;
   flyAuthExit?: number;
+  regionsExit?: number;
   regions?: string;
+  appsExit?: number;
   appOutput?: string;
+  mpgExit?: number;
   mpgOutput?: string;
+  storageExit?: number;
   storageOutput?: string;
   activation?: unknown;
+  envState?: "file" | "missing" | "symlink";
   envMode?: number;
   envIgnored?: boolean;
   qmCheckExit?: number;
@@ -110,8 +126,15 @@ function createPreflightScenario(scenario: PreflightScenario = {}): PreflightRes
   chmodSync(join(scriptRoot, "preflight.sh"), 0o700);
 
   const envPath = join(deploymentRoot, ".env");
-  writeFileSync(envPath, "", { mode: scenario.envMode ?? 0o600 });
-  chmodSync(envPath, scenario.envMode ?? 0o600);
+  const envContent = `${envSecretName}=${envSecretValue}\n`;
+  if (scenario.envState === "symlink") {
+    const envTarget = join(root, "synthetic-test.env");
+    writeFileSync(envTarget, envContent, { mode: 0o600 });
+    symlinkSync(envTarget, envPath);
+  } else if (scenario.envState !== "missing") {
+    writeFileSync(envPath, envContent, { mode: scenario.envMode ?? 0o600 });
+    chmodSync(envPath, scenario.envMode ?? 0o600);
+  }
   writeFileSync(join(root, activationRelativePath), `${JSON.stringify(scenario.activation ?? acceptedRecord)}\n`, {
     mode: 0o600,
   });
@@ -167,10 +190,10 @@ function createPreflightScenario(scenario: PreflightScenario = {}): PreflightRes
     `printf '%s\\n' ${shellQuote(sentinel)} >&2\n` +
       `case "$*" in\n` +
       `  "auth whoami") printf '%s\\n' ${shellQuote("private-operator-identity")}; exit ${scenario.flyAuthExit ?? 0} ;;\n` +
-      `  "platform regions") printf '%s\\n' ${shellQuote(scenario.regions ?? "Johannesburg jnb")}; exit 0 ;;\n` +
-      `  "apps list --org personal") printf '%s\\n' ${shellQuote(scenario.appOutput ?? "NAME OWNER STATUS")}; exit 0 ;;\n` +
-      `  "mpg list --org personal") printf '%s\\n' ${shellQuote(scenario.mpgOutput ?? "NAME STATUS")}; exit 0 ;;\n` +
-      `  "storage list --org personal") printf '%s\\n' ${shellQuote(scenario.storageOutput ?? "NAME STATUS")}; exit 0 ;;\n` +
+      `  "platform regions") printf '%s\\n' ${shellQuote(scenario.regions ?? "Johannesburg jnb")}; exit ${scenario.regionsExit ?? 0} ;;\n` +
+      `  "apps list --org personal") printf '%s\\n' ${shellQuote(scenario.appOutput ?? "NAME OWNER STATUS")}; exit ${scenario.appsExit ?? 0} ;;\n` +
+      `  "mpg list --org personal") printf '%s\\n' ${shellQuote(scenario.mpgOutput ?? "NAME STATUS")}; exit ${scenario.mpgExit ?? 0} ;;\n` +
+      `  "storage list --org personal") printf '%s\\n' ${shellQuote(scenario.storageOutput ?? "NAME STATUS")}; exit ${scenario.storageExit ?? 0} ;;\n` +
       `  *) exit 99 ;;\n` +
       `esac\n`,
   );
@@ -202,6 +225,8 @@ function assertPreflightFailure(scenario: PreflightScenario, check: string) {
     assert.match(output, new RegExp(`(^|\\n)${check}: fail\\n?$`));
     assert.doesNotMatch(output, new RegExp(sentinel));
     assert.doesNotMatch(output, /private-operator-identity/);
+    assert.equal(output.includes(envSecretName), false);
+    assert.equal(output.includes(envSecretValue), false);
   } finally {
     result.cleanup();
   }
@@ -266,6 +291,17 @@ test("activation record rejects participant identities and email addresses", () 
   }
 });
 
+test("activation record rejects inherited, non-enumerable, and symbol extras", () => {
+  const inherited = Object.assign(Object.create({ inheritedExtra: true }), acceptedRecord);
+  const nonEnumerable = { ...acceptedRecord };
+  Object.defineProperty(nonEnumerable, "nonEnumerableExtra", { value: true });
+  const symbolExtra = { ...acceptedRecord, [Symbol("symbolExtra")]: true };
+
+  for (const record of [inherited, nonEnumerable, symbolExtra]) {
+    assert.throws(() => assertActivationRecord(record), /invalid activation field:/);
+  }
+});
+
 test("activation CLI failures name only the invalid field", () => {
   const privateValue = "private-org-do-not-leak";
   const result = cli({ ...acceptedRecord, flyOrg: privateValue });
@@ -282,6 +318,16 @@ test("activation CLI sanitizes an unsafe field name instead of reflecting it", (
   assert.equal(result.stdout, "");
   assert.equal(result.stderr, "activation-record: fail record\n");
   assert.equal(`${result.stdout}${result.stderr}`.includes("private-value-do-not-leak"), false);
+});
+
+test("activation module import through node stdin does not execute or crash", () => {
+  const result = spawnSync(process.execPath, ["--input-type=module", "-"], {
+    input: `await import(${JSON.stringify(pathToFileURL(activationScript).href)});\n`,
+    encoding: "utf8",
+  });
+  assert.equal(result.status, 0);
+  assert.equal(result.stdout, "");
+  assert.equal(result.stderr, "");
 });
 
 test("hosted preflight passes with only named status output", () => {
@@ -311,6 +357,8 @@ test("hosted preflight passes with only named status output", () => {
     assert.equal(result.stderr, "");
     assert.doesNotMatch(result.stdout, new RegExp(sentinel));
     assert.doesNotMatch(result.stdout, /private-operator-identity/);
+    assert.equal(result.stdout.includes(envSecretName), false);
+    assert.equal(result.stdout.includes(envSecretValue), false);
   } finally {
     result.cleanup();
   }
@@ -323,7 +371,14 @@ test("hosted preflight fails closed on runtime, worktree, boundary, tooling, and
   assertPreflightFailure({ boundaryExit: 1 }, "hosted-boundary");
   assertPreflightFailure({ buildxExit: 1 }, "docker-buildx");
   assertPreflightFailure({ flyAuthExit: 1 }, "fly-auth");
+  assertPreflightFailure({ regionsExit: 1 }, "fly-region");
   assertPreflightFailure({ regions: "Johannesburg jnb2" }, "fly-region");
+});
+
+test("hosted preflight fails closed when Fly inventory commands fail", () => {
+  assertPreflightFailure({ appsExit: 1 }, "fly-app-names");
+  assertPreflightFailure({ mpgExit: 1 }, "fly-data-resource-names");
+  assertPreflightFailure({ storageExit: 1 }, "fly-data-resource-names");
 });
 
 test("hosted preflight rejects each exact app collision but permits near matches", () => {
@@ -360,6 +415,8 @@ test("hosted preflight rejects exact Managed Postgres and Tigris collisions", ()
 
 test("hosted preflight rejects invalid activation and unsafe env-file state", () => {
   assertPreflightFailure({ activation: { ...acceptedRecord, syntheticOnly: false } }, "activation-record");
+  assertPreflightFailure({ envState: "missing" }, "env-file");
+  assertPreflightFailure({ envState: "symlink" }, "env-file");
   assertPreflightFailure({ envMode: 0o640 }, "env-file");
   assertPreflightFailure({ envIgnored: false }, "env-file");
 });

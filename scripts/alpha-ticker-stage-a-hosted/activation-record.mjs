@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
 import { readFileSync, realpathSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const EXPECTED_RECORD = Object.freeze({
   sponsorApproved: true,
@@ -52,16 +53,37 @@ function inspectForSensitiveData(value, field = "record", seen = new WeakSet()) 
 }
 
 export function assertActivationRecord(record) {
+  if (
+    typeof record !== "object" ||
+    record === null ||
+    Array.isArray(record) ||
+    Object.getPrototypeOf(record) !== Object.prototype
+  ) {
+    invalid("record");
+  }
   inspectForSensitiveData(record);
-  if (typeof record !== "object" || record === null || Array.isArray(record)) invalid("record");
 
   const expectedKeys = Object.keys(EXPECTED_RECORD);
-  const suppliedKeys = Object.keys(record);
+  const suppliedKeys = Reflect.ownKeys(record);
   for (const key of suppliedKeys) {
+    if (typeof key !== "string") invalid("record");
     if (!Object.hasOwn(EXPECTED_RECORD, key)) invalid(key);
+    const descriptor = Object.getOwnPropertyDescriptor(record, key);
+    if (!descriptor?.enumerable || !("value" in descriptor)) invalid(key);
   }
   for (const key of expectedKeys) {
     if (!Object.hasOwn(record, key) || record[key] !== EXPECTED_RECORD[key]) invalid(key);
+  }
+}
+
+function isDirectExecution(argvEntry) {
+  if (!argvEntry || argvEntry === "-") return false;
+  try {
+    const candidateUrl = pathToFileURL(resolve(argvEntry));
+    if (candidateUrl.href === import.meta.url) return true;
+    return realpathSync(fileURLToPath(candidateUrl)) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
   }
 }
 
@@ -88,4 +110,4 @@ function runCli() {
   }
 }
 
-if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) runCli();
+if (isDirectExecution(process.argv[1])) runCli();
