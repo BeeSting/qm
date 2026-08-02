@@ -41,6 +41,8 @@ const acceptedRecord = {
 
 interface ActivationModule {
   assertActivationRecord(record: unknown): void;
+  assertQmInstall(root: string, expectedDigest?: string): void;
+  calculateQmPackageTreeDigest(packageRoot: string): string;
 }
 
 interface PreflightScenario {
@@ -50,6 +52,7 @@ interface PreflightScenario {
   boundaryExit?: number;
   buildxExit?: number;
   qmBinary?: "present" | "missing" | "unexpected-symlink";
+  qmInstallExit?: number;
   flyAuthExit?: number;
   flyAuthDelaySeconds?: number;
   regionsExit?: number;
@@ -82,7 +85,56 @@ interface PreflightResult {
 const activationModule: unknown = await import(pathToFileURL(activationScript).href);
 assert.ok(typeof activationModule === "object" && activationModule !== null);
 assert.equal(typeof (activationModule as ActivationModule).assertActivationRecord, "function");
-const { assertActivationRecord } = activationModule as ActivationModule;
+const { assertActivationRecord, assertQmInstall, calculateQmPackageTreeDigest } = activationModule as ActivationModule;
+
+function regionInventory(code = "jnb") {
+  return JSON.stringify([
+    {
+      code,
+      name: "Johannesburg",
+      latitude: -26.2,
+      longitude: 28.04,
+      gateway_available: true,
+      requires_paid_plan: false,
+      deprecated: false,
+      capacity: 1,
+      geo_region: "africa",
+    },
+  ]);
+}
+
+function appInventory(name: string) {
+  return JSON.stringify([{ Name: name, Organization: { Slug: "personal" } }]);
+}
+
+function mpgInventory(name: string) {
+  return JSON.stringify([
+    {
+      id: "cluster-id",
+      mpgd_cluster_id: "mpgd-cluster-id",
+      version: 1,
+      name,
+      region: "jnb",
+      status: "ready",
+      plan: "basic",
+      disk: 10,
+      replicas: 2,
+      organization: { Slug: "personal" },
+      ip_assignments: { direct: "" },
+      attached_apps: [],
+    },
+  ]);
+}
+
+function storageTable(rows: Array<[string, string]> = []) {
+  const firstColumnWidth = Math.max(4, ...rows.map(([name]) => name.length));
+  const secondColumnWidth = Math.max(3, ...rows.map(([, org]) => org.length));
+  const lines = [
+    ` ${"NAME".padEnd(firstColumnWidth)} │ ${"ORG".padEnd(secondColumnWidth)} `,
+    ...rows.map(([name, org]) => ` ${name.padEnd(firstColumnWidth)} │ ${org.padEnd(secondColumnWidth)} `),
+  ];
+  return `${lines.join("\n")}\n\n`;
+}
 
 function fieldFromError(run: () => void): string {
   let message = "";
@@ -119,6 +171,42 @@ function shellQuote(value: string): string {
 
 function writeShim(path: string, body: string) {
   writeFileSync(path, `#!/bin/sh\nset -eu\n${body}`, { mode: 0o700 });
+}
+
+function createQmInstallFixture() {
+  const root = mkdtempSync(join(tmpdir(), "qm-install-verification-"));
+  const packageRoot = join(root, "node_modules", "@yc-software", "qm");
+  const packageBinRoot = join(packageRoot, "dist", "bin");
+  const binRoot = join(root, "node_modules", ".bin");
+  mkdirSync(packageBinRoot, { recursive: true });
+  mkdirSync(binRoot, { recursive: true });
+  writeFileSync(join(root, "package.json"), JSON.stringify({ dependencies: { "@yc-software/qm": "0.1.4" } }));
+  writeFileSync(
+    join(root, "package-lock.json"),
+    JSON.stringify({
+      lockfileVersion: 3,
+      requires: true,
+      packages: {
+        "": { dependencies: { "@yc-software/qm": "0.1.4" } },
+        "node_modules/@yc-software/qm": {
+          version: "0.1.4",
+          resolved: "https://registry.npmjs.org/@yc-software/qm/-/qm-0.1.4.tgz",
+          integrity: "sha512-L3WWtV+yjhBq7ARYJxNzTpV4cdvw8ZCYXVk0kRUUPjKwH7NObz8newikeCZwijvpmEEEnDLTi02O+nowQTDC4Q==",
+        },
+      },
+    }),
+  );
+  writeFileSync(
+    join(packageRoot, "package.json"),
+    JSON.stringify({ name: "@yc-software/qm", version: "0.1.4", bin: { qm: "dist/bin/qm.js" } }),
+  );
+  writeFileSync(join(packageRoot, "README.md"), "fixture\n");
+  const executable = join(packageBinRoot, "qm.js");
+  writeFileSync(executable, "#!/usr/bin/env node\n", { mode: 0o755 });
+  chmodSync(executable, 0o755);
+  symlinkSync("../@yc-software/qm/dist/bin/qm.js", join(binRoot, "qm"));
+  const digest = calculateQmPackageTreeDigest(packageRoot);
+  return { root, executable, digest, cleanup: () => rmSync(root, { force: true, recursive: true }) };
 }
 
 function createPreflightScenario(scenario: PreflightScenario = {}): PreflightResult {
@@ -165,6 +253,10 @@ function createPreflightScenario(scenario: PreflightScenario = {}): PreflightRes
       `case "\${1-}" in\n` +
       `  */check-boundary.mjs) printf '%s\\n' ${shellQuote(sentinel)} >&2; exit ${scenario.boundaryExit ?? 0} ;;\n` +
       `esac\n` +
+      `if [ "\${2-}" = "--verify-qm-install" ]; then\n` +
+      `  printf '%s\\n' ${shellQuote(sentinel)} >&2\n` +
+      `  exit ${scenario.qmInstallExit ?? (scenario.qmBinary === "present" || scenario.qmBinary === undefined ? 0 : 1)}\n` +
+      `fi\n` +
       `exec ${shellQuote(realNode)} "$@"\n`,
   );
 
@@ -220,10 +312,10 @@ function createPreflightScenario(scenario: PreflightScenario = {}): PreflightRes
       `printf '%s\\n' ${shellQuote(sentinel)} >&2\n` +
       `case "$*" in\n` +
       `  "auth whoami") ${scenario.flyAuthDelaySeconds ? `sleep ${scenario.flyAuthDelaySeconds};` : ":"} printf '%s\\n' ${shellQuote("private-operator-identity")}; exit ${scenario.flyAuthExit ?? 0} ;;\n` +
-      `  "platform regions --json") printf '%s\\n' ${shellQuote(scenario.regions ?? '[{"code":"jnb","name":"Johannesburg"}]')}; exit ${scenario.regionsExit ?? 0} ;;\n` +
+      `  "platform regions --json") printf '%s\\n' ${shellQuote(scenario.regions ?? regionInventory())}; exit ${scenario.regionsExit ?? 0} ;;\n` +
       `  "apps list --org personal --json") printf '%s\\n' ${shellQuote(scenario.appOutput ?? "[]")}; exit ${scenario.appsExit ?? 0} ;;\n` +
-      `  "mpg list --org personal --json") printf '%s\\n' ${shellQuote(scenario.mpgOutput ?? "[]")}; exit ${scenario.mpgExit ?? 0} ;;\n` +
-      `  "storage list --org personal --json") printf '%s\\n' ${shellQuote(scenario.storageOutput ?? "[]")}; exit ${scenario.storageExit ?? 0} ;;\n` +
+      `  "mpg list --json --org personal") printf '%s' ${shellQuote(scenario.mpgOutput ?? "No managed postgres clusters found in organization personal\n")}; exit ${scenario.mpgExit ?? 0} ;;\n` +
+      `  "storage list --org personal") printf '%s' ${shellQuote(scenario.storageOutput ?? storageTable())}; exit ${scenario.storageExit ?? 0} ;;\n` +
       `  *) exit 99 ;;\n` +
       `esac\n`,
   );
@@ -397,6 +489,108 @@ test("activation CLI rejects symlinked and oversized inputs", () => {
   }
 });
 
+test("QM install verification enforces metadata and the deterministic package digest", () => {
+  assert.equal(typeof calculateQmPackageTreeDigest, "function");
+  assert.equal(typeof assertQmInstall, "function");
+  const fixture = createQmInstallFixture();
+  try {
+    assert.doesNotThrow(() => assertQmInstall(fixture.root, fixture.digest));
+    writeFileSync(fixture.executable, "#!/usr/bin/env node\n// tampered\n", { mode: 0o755 });
+    assert.throws(() => assertQmInstall(fixture.root, fixture.digest), /invalid activation field: qmTreeDigest/);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("QM install verification rejects dependency, lock, and installed metadata drift", () => {
+  const cases: Array<[string, (root: string) => void]> = [
+    [
+      "packageDependency",
+      (root) =>
+        writeFileSync(join(root, "package.json"), JSON.stringify({ dependencies: { "@yc-software/qm": "0.1.5" } })),
+    ],
+    [
+      "lockVersion",
+      (root) => {
+        const lockPath = join(root, "package-lock.json");
+        const lock = JSON.parse(readFileSync(lockPath, "utf8"));
+        lock.packages["node_modules/@yc-software/qm"].version = "0.1.5";
+        writeFileSync(lockPath, JSON.stringify(lock));
+      },
+    ],
+    [
+      "lockResolved",
+      (root) => {
+        const lockPath = join(root, "package-lock.json");
+        const lock = JSON.parse(readFileSync(lockPath, "utf8"));
+        lock.packages["node_modules/@yc-software/qm"].resolved = "https://example.invalid/qm.tgz";
+        writeFileSync(lockPath, JSON.stringify(lock));
+      },
+    ],
+    [
+      "lockIntegrity",
+      (root) => {
+        const lockPath = join(root, "package-lock.json");
+        const lock = JSON.parse(readFileSync(lockPath, "utf8"));
+        lock.packages["node_modules/@yc-software/qm"].integrity = "sha512-invalid";
+        writeFileSync(lockPath, JSON.stringify(lock));
+      },
+    ],
+    [
+      "installedPackage",
+      (root) => {
+        const installedPath = join(root, "node_modules", "@yc-software", "qm", "package.json");
+        writeFileSync(
+          installedPath,
+          JSON.stringify({ name: "@yc-software/qm", version: "0.1.5", bin: { qm: "dist/bin/qm.js" } }),
+        );
+      },
+    ],
+    [
+      "qmExecutable",
+      (root) => {
+        const link = join(root, "node_modules", ".bin", "qm");
+        rmSync(link);
+        symlinkSync("../@yc-software/qm/README.md", link);
+      },
+    ],
+  ];
+
+  for (const [field, mutate] of cases) {
+    const fixture = createQmInstallFixture();
+    try {
+      mutate(fixture.root);
+      assert.throws(
+        () => assertQmInstall(fixture.root, fixture.digest),
+        new RegExp(`invalid activation field: ${field}`),
+      );
+    } finally {
+      fixture.cleanup();
+    }
+  }
+});
+
+test("timeout helper kills a SIGTERM-ignoring process group by the hard deadline", () => {
+  const root = mkdtempSync(join(tmpdir(), "qm-timeout-hard-deadline-"));
+  try {
+    const command = join(root, "ignore-term.sh");
+    writeShim(command, "trap '' TERM\nsleep 6\n");
+    const startedAt = Date.now();
+    const result = spawnSync(process.execPath, [activationScript, "--run-timeout", "1000", "--", command], {
+      encoding: "utf8",
+      timeout: 5_000,
+      killSignal: "SIGKILL",
+    });
+    const elapsedMs = Date.now() - startedAt;
+    assert.equal(result.status, 124);
+    assert.ok(elapsedMs < 3_000, `timeout helper exceeded hard deadline: ${elapsedMs}ms`);
+    assert.equal(result.stdout, "");
+    assert.equal(result.stderr, "");
+  } finally {
+    rmSync(root, { force: true, recursive: true });
+  }
+});
+
 test("hosted preflight passes with only named status output", () => {
   const result = createPreflightScenario();
   try {
@@ -442,7 +636,7 @@ test("hosted preflight fails closed on runtime, worktree, boundary, tooling, and
   assertPreflightFailure({ buildxExit: 1 }, "docker-buildx");
   assertPreflightFailure({ flyAuthExit: 1 }, "fly-auth");
   assertPreflightFailure({ regionsExit: 1 }, "fly-region");
-  assertPreflightFailure({ regions: '[{"code":"jnb2","name":"Johannesburg"}]' }, "fly-region");
+  assertPreflightFailure({ regions: regionInventory("jnb2") }, "fly-region");
 });
 
 test("hosted preflight detects a missing local QM binary before network-capable commands", () => {
@@ -484,11 +678,11 @@ test("hosted preflight rejects each exact app collision but permits near matches
     "alpha-ticker-stage-a-egress",
   ];
   for (const name of appNames) {
-    assertPreflightFailure({ appOutput: JSON.stringify([{ Name: name }]) }, "fly-app-names");
+    assertPreflightFailure({ appOutput: appInventory(name) }, "fly-app-names");
   }
 
   const result = createPreflightScenario({
-    appOutput: JSON.stringify([{ Name: "alpha-ticker-stage-a-hosted-core,near" }]),
+    appOutput: appInventory("alpha-ticker-stage-a-hosted-core-near"),
   });
   try {
     assert.equal(result.status, 0);
@@ -498,24 +692,43 @@ test("hosted preflight rejects each exact app collision but permits near matches
 });
 
 test("hosted preflight rejects exact Managed Postgres and Tigris collisions", () => {
+  assertPreflightFailure({ mpgOutput: mpgInventory("alpha-ticker-stage-a-hosted-pg") }, "fly-data-resource-names");
   assertPreflightFailure(
-    { mpgOutput: JSON.stringify([{ name: "alpha-ticker-stage-a-hosted-pg" }]) },
-    "fly-data-resource-names",
-  );
-  assertPreflightFailure(
-    { storageOutput: JSON.stringify([{ name: "alpha-ticker-stage-a-hosted-data" }]) },
+    { storageOutput: storageTable([["alpha-ticker-stage-a-hosted-data", "personal"]]) },
     "fly-data-resource-names",
   );
 });
 
-test("hosted preflight rejects malformed and schema-invalid Fly JSON", () => {
+test("hosted preflight accepts real non-empty MPG JSON and Tigris table output", () => {
+  const result = createPreflightScenario({
+    mpgOutput: mpgInventory("available-stage-a-pg"),
+    storageOutput: storageTable([["available-stage-a-data", "personal"]]),
+  });
+  try {
+    assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
+  } finally {
+    result.cleanup();
+  }
+});
+
+test("hosted preflight rejects malformed or invented Fly inventory forms", () => {
   assertPreflightFailure({ regions: "not-json" }, "fly-region");
   assertPreflightFailure({ regions: '{"regions":[]}' }, "fly-region");
   assertPreflightFailure({ regions: '[{"Code":"jnb"}]' }, "fly-region");
   assertPreflightFailure({ appOutput: '[{"name":"untrusted-casing"}]' }, "fly-app-names");
   assertPreflightFailure({ appOutput: '[{"Name":["not-a-string"]}]' }, "fly-app-names");
   assertPreflightFailure({ mpgOutput: '{"data":[]}' }, "fly-data-resource-names");
-  assertPreflightFailure({ storageOutput: '[{"name":3}]' }, "fly-data-resource-names");
+  assertPreflightFailure(
+    { mpgOutput: "No managed postgres clusters found in organization personal\n[]\n" },
+    "fly-data-resource-names",
+  );
+  assertPreflightFailure({ mpgOutput: `${mpgInventory("bad,punctuation")}` }, "fly-data-resource-names");
+  assertPreflightFailure({ storageOutput: "[]\n" }, "fly-data-resource-names");
+  assertPreflightFailure({ storageOutput: "NAME  ORG\n\n" }, "fly-data-resource-names");
+  assertPreflightFailure({ storageOutput: " NAME | ORG \n\n" }, "fly-data-resource-names");
+  assertPreflightFailure({ storageOutput: " NAME │ ORG │ EXTRA \n\n" }, "fly-data-resource-names");
+  assertPreflightFailure({ storageOutput: storageTable([["bad,punctuation", "personal"]]) }, "fly-data-resource-names");
+  assertPreflightFailure({ storageOutput: storageTable([["valid-name", "another-org"]]) }, "fly-data-resource-names");
 });
 
 test("hosted preflight rejects invalid activation and unsafe env-file state", () => {

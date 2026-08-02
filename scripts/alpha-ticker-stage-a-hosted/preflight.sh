@@ -49,6 +49,11 @@ validate_fly_json() {
   node "$SCRIPT_DIR/activation-record.mjs" --fly-json "$kind" --input "$input" >/dev/null 2>&1
 }
 
+validate_fly_storage_table() {
+  input=$1
+  node "$SCRIPT_DIR/activation-record.mjs" --fly-storage-table --input "$input" >/dev/null 2>&1
+}
+
 cd "$REPO_ROOT" || fail "worktree"
 
 case "$COMMAND_TIMEOUT_SECONDS" in
@@ -77,15 +82,9 @@ fi
 pass "hosted-boundary"
 
 # PATH-provided Node/npm/git/docker/fly are operator-controlled prerequisites.
-# QM is different: it must be the dependency installed inside the pinned hosted layer.
-if [ ! -x "$QM_BIN" ]; then
-  fail "qm-binary"
-fi
-if [ ! -L "$QM_BIN" ]; then
-  fail "qm-binary"
-fi
-qm_target=$(readlink "$QM_BIN" 2>/dev/null) || fail "qm-binary"
-if [ "$qm_target" != "../@yc-software/qm/dist/bin/qm.js" ]; then
+# QM is verified against the committed dependency, lock integrity, metadata,
+# executable realpath, and clean-install package-tree digest without npm execution.
+if ! node "$SCRIPT_DIR/activation-record.mjs" --verify-qm-install --root "$DEPLOYMENT_ROOT" >/dev/null 2>&1; then
   fail "qm-binary"
 fi
 pass "qm-binary"
@@ -124,10 +123,10 @@ pass "fly-app-names"
 
 mpg_file="$TEMP_DIR/mpg.json"
 storage_file="$TEMP_DIR/storage.json"
-if ! run_with_timeout fly mpg list --org personal --json >"$mpg_file" 2>/dev/null ||
+if ! run_with_timeout fly mpg list --json --org personal >"$mpg_file" 2>/dev/null ||
   ! validate_fly_json "mpg" "$mpg_file" ||
-  ! run_with_timeout fly storage list --org personal --json >"$storage_file" 2>/dev/null ||
-  ! validate_fly_json "storage" "$storage_file"; then
+  ! run_with_timeout fly storage list --org personal >"$storage_file" 2>/dev/null ||
+  ! validate_fly_storage_table "$storage_file"; then
   fail "fly-data-resource-names"
 fi
 pass "fly-data-resource-names"
@@ -150,6 +149,9 @@ if ! git check-ignore --quiet "$DEPLOYMENT_REL/.env" >/dev/null 2>&1; then
 fi
 pass "env-file"
 
+# This detects replacement and permission drift between checks. It cannot close
+# the final local-write race between stat and a QM process opening the file;
+# the operator-controlled local account remains inside the trust boundary.
 if ! env_is_unchanged; then
   fail "env-file"
 fi
