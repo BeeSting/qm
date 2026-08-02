@@ -26,6 +26,12 @@ test("the committed Stage A deployment layer is boundary-clean", () => {
   assert.deepEqual(scanDirectory(deploymentRoot), []);
 });
 
+test("the local default compares normalized localhost origins", () => {
+  withCanary("config.json", '{"publicUrl":"http://localhost:8082/callback?state=synthetic"}\n', (root) => {
+    assert.deepEqual(scanDirectory(root), []);
+  });
+});
+
 test("detects secret-shaped values without returning the matched value", () => {
   withCanary("secret.txt", "SERVICE_TOKEN=synthetic-canary-value-1234567890\n", (root) => {
     const violations = scanDirectory(root);
@@ -42,6 +48,7 @@ test("detects restricted environment names and non-loopback public URLs", () => 
       const ids = ruleIds(root);
       assert.ok(ids.includes("RESTRICTED_ENV_NAME"));
       assert.ok(ids.includes("NON_LOOPBACK_PUBLIC_URL"));
+      assert.ok(ids.includes("UNAPPROVED_PUBLIC_URL"));
     },
   );
 });

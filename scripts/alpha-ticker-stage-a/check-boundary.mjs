@@ -2,18 +2,19 @@
 
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { basename, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const DEFAULT_ROOT = "deploy/layers/alpha-ticker-stage-a";
 const TEXT_FILE_LIMIT = 2_000_000;
 const SKIP_DIRECTORIES = new Set([".git", "node_modules"]);
+const DEFAULT_ALLOWED_PUBLIC_URLS = new Set(["http://localhost:8082"]);
 
 const CONTENT_RULES = [
   {
     ruleId: "SECRET_VALUE",
     pattern:
-      /(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD)\s*[=:]\s*["']?(?!false\b|null\b|undefined\b)[A-Za-z0-9_./+=-]{16,}/i,
+      /(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD)[ \t]*[=:][ \t]*["']?(?!false\b|null\b|undefined\b)[A-Za-z0-9_./+=-]{16,}/i,
   },
   {
     ruleId: "SECRET_VALUE",
@@ -62,16 +63,38 @@ function addViolation(violations, file, ruleId) {
   }
 }
 
-function scanPublicUrl(content, file, violations) {
+function normalizedOrigins(allowedPublicUrls) {
+  if (!allowedPublicUrls || typeof allowedPublicUrls[Symbol.iterator] !== "function") return new Set();
+  const origins = new Set();
+  for (const value of allowedPublicUrls) {
+    try {
+      const url = new URL(value);
+      if ((url.protocol !== "http:" && url.protocol !== "https:") || url.username || url.password) {
+        return new Set();
+      }
+      origins.add(url.origin);
+    } catch {
+      return new Set();
+    }
+  }
+  return origins;
+}
+
+function scanPublicUrl(content, file, violations, { allowedOrigins, localPolicy }) {
   const match = /["']publicUrl["']\s*:\s*["']([^"']+)["']/i.exec(content);
   if (!match) return;
   try {
     const url = new URL(match[1]);
-    if (url.protocol !== "http:" || (url.hostname !== "localhost" && url.hostname !== "127.0.0.1")) {
-      addViolation(violations, file, "NON_LOOPBACK_PUBLIC_URL");
-    }
+    const approved =
+      (url.protocol === "http:" || url.protocol === "https:") &&
+      !url.username &&
+      !url.password &&
+      allowedOrigins.has(url.origin);
+    if (!approved) addViolation(violations, file, "UNAPPROVED_PUBLIC_URL");
+    if (localPolicy && !approved) addViolation(violations, file, "NON_LOOPBACK_PUBLIC_URL");
   } catch {
-    addViolation(violations, file, "NON_LOOPBACK_PUBLIC_URL");
+    addViolation(violations, file, "UNAPPROVED_PUBLIC_URL");
+    if (localPolicy) addViolation(violations, file, "NON_LOOPBACK_PUBLIC_URL");
   }
 }
 
@@ -94,20 +117,46 @@ function scanToolDescriptor(content, file, violations) {
   }
 }
 
-function scanContent(content, file, violations) {
+function scanContent(content, file, violations, publicUrlPolicy) {
   for (const rule of CONTENT_RULES) {
     if (rule.pattern.test(content)) addViolation(violations, file, rule.ruleId);
   }
-  scanPublicUrl(content, file, violations);
+  scanPublicUrl(content, file, violations, publicUrlPolicy);
   scanToolDescriptor(content, file, violations);
 }
 
-export function scanDirectory(root) {
+function isGitIgnored(filePath) {
+  try {
+    execFileSync("git", ["check-ignore", "--quiet", "--", filePath], {
+      cwd: dirname(filePath),
+      stdio: "ignore",
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function publicUrlPolicy(allowedPublicUrls) {
+  const allowedOrigins = normalizedOrigins(allowedPublicUrls);
+  const defaultOrigins = normalizedOrigins(DEFAULT_ALLOWED_PUBLIC_URLS);
+  return {
+    allowedOrigins,
+    localPolicy:
+      allowedOrigins.size === defaultOrigins.size && [...allowedOrigins].every((origin) => defaultOrigins.has(origin)),
+  };
+}
+
+export function scanDirectory(root, { allowedPublicUrls = new Set(["http://localhost:8082"]) } = {}) {
   const absoluteRoot = resolve(root);
   const violations = [];
+  const urlPolicy = publicUrlPolicy(allowedPublicUrls);
   for (const filePath of listFiles(absoluteRoot)) {
     const file = relative(absoluteRoot, filePath) || basename(filePath);
-    if (basename(filePath) === ".env") addViolation(violations, file, "COMMITTED_ENV_FILE");
+    if (basename(filePath) === ".env") {
+      if (!isGitIgnored(filePath)) addViolation(violations, file, "COMMITTED_ENV_FILE");
+      continue;
+    }
     let content;
     try {
       content = readFileSync(filePath, "utf8");
@@ -115,12 +164,16 @@ export function scanDirectory(root) {
       continue;
     }
     if (content.includes("\0")) continue;
-    scanContent(content, `${sep}${file}`, violations);
+    scanContent(content, `${sep}${file}`, violations, urlPolicy);
   }
   return violations.sort((a, b) => `${a.file}:${a.ruleId}`.localeCompare(`${b.file}:${b.ruleId}`));
 }
 
-export function scanStagedDeploymentDiff(repoRoot = process.cwd(), deploymentRoot = DEFAULT_ROOT) {
+export function scanStagedDeploymentDiff(
+  repoRoot = process.cwd(),
+  deploymentRoot = DEFAULT_ROOT,
+  { allowedPublicUrls = new Set(["http://localhost:8082"]) } = {},
+) {
   let diff;
   try {
     diff = execFileSync("git", ["diff", "--cached", "--unified=0", "--no-color", "--", deploymentRoot], {
@@ -138,7 +191,7 @@ export function scanStagedDeploymentDiff(repoRoot = process.cwd(), deploymentRoo
     .map((line) => line.slice(1))
     .join("\n");
   const violations = [];
-  scanContent(added, "<staged-deployment-diff>", violations);
+  scanContent(added, "<staged-deployment-diff>", violations, publicUrlPolicy(allowedPublicUrls));
   return violations;
 }
 

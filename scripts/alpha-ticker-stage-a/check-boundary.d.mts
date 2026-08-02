@@ -3,5 +3,13 @@ export interface BoundaryViolation {
   ruleId: string;
 }
 
-export function scanDirectory(root: string): BoundaryViolation[];
-export function scanStagedDeploymentDiff(repoRoot?: string, deploymentRoot?: string): BoundaryViolation[];
+export interface BoundaryOptions {
+  allowedPublicUrls?: Set<string>;
+}
+
+export function scanDirectory(root: string, options?: BoundaryOptions): BoundaryViolation[];
+export function scanStagedDeploymentDiff(
+  repoRoot?: string,
+  deploymentRoot?: string,
+  options?: BoundaryOptions,
+): BoundaryViolation[];
