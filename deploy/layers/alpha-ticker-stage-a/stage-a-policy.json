@@ -1,0 +1,24 @@
+{
+  "stage": "A",
+  "dataClass": "public-synthetic-only",
+  "cloudMutation": false,
+  "liveAlphaPackets": false,
+  "productionCredentials": false,
+  "allowedTools": ["alpha-packet"],
+  "allowedEgress": [],
+  "allowedTickers": ["SYNTH"],
+  "allowedPortfolios": ["SYNTHETIC_NUCLEUS"],
+  "prohibitedCapabilities": [
+    "browser",
+    "published-apps",
+    "public-links",
+    "slack",
+    "email",
+    "telegram",
+    "github-write",
+    "deployment",
+    "database",
+    "brokerage",
+    "external-communications"
+  ]
+}
