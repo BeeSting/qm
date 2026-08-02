@@ -48,5 +48,7 @@ test("teardown dry-run is idempotent and exact-prefix bounded", () => {
 
   const body = readFileSync(teardown, "utf8");
   assert.match(body, /EXPECTED_ORG="alpha-ticker-stage-a"/);
+  assert.match(body, /has_stage_a_resources\(\)/);
+  assert.match(body, /if has_stage_a_resources; then/);
   assert.doesNotMatch(body, /docker system prune|docker volume prune|docker network prune/);
 });

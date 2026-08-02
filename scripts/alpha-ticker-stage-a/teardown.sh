@@ -36,10 +36,20 @@ if ! docker info >/dev/null 2>&1; then
   exit 1
 fi
 
-(
-  cd "${DEPLOY_DIR}"
-  npm exec qm -- down --purge
-)
+has_stage_a_resources() {
+  [[ -n "$(docker ps -aq --filter "label=qm.org=${EXPECTED_ORG}")" ]] ||
+    docker network ls --format '{{.Name}}' | grep -Fxq "${RESOURCE_PREFIX}" ||
+    docker volume ls --format '{{.Name}}' | grep -E "^${RESOURCE_PREFIX}-" >/dev/null
+}
+
+if has_stage_a_resources; then
+  if ! (
+    cd "${DEPLOY_DIR}"
+    npm exec qm -- down --purge
+  ); then
+    printf 'teardown warning: upstream down was incomplete; applying exact-scope cleanup\n' >&2
+  fi
+fi
 
 while IFS= read -r container_id; do
   [[ -z "${container_id}" ]] && continue
