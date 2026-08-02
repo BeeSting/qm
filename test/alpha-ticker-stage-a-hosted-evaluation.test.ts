@@ -113,23 +113,36 @@ test("recursively rejects forbidden keys before unsupported-container handling",
   }
 });
 
-test("enforces participant, workflow, model, revision, output id, and incident domains", () => {
+test("enforces fixed participant, workflow, and model domains plus non-empty string identifiers", () => {
   const invalid: Array<[string, unknown]> = [
     ["participant", "P4"],
     ["participant", 1],
     ["workflow", "portfolio-writeback"],
     ["model", "gpt-5.6"],
-    ["deploymentRevision", "a".repeat(39)],
-    ["deploymentRevision", "z".repeat(40)],
     ["outputId", ""],
-    ["outputId", "x\nbody"],
+    ["outputId", "   "],
+    ["outputId", 1],
+    ["deploymentRevision", ""],
+    ["deploymentRevision", "\t"],
+    ["deploymentRevision", null],
     ["incidentCategory", ""],
-    ["incidentCategory", "contains spaces"],
+    ["incidentCategory", "\n"],
+    ["incidentCategory", false],
   ];
 
   for (const [field, value] of invalid) {
     assert.throws(() => assertScoreRecord(cloneValid({ [field]: value })), new RegExp(field));
   }
+
+  assert.doesNotThrow(() =>
+    assertScoreRecord(
+      cloneValid({
+        outputId: "run 1 / output",
+        deploymentRevision: "release candidate 7",
+        incidentCategory: "identity boundary",
+      }),
+    ),
+  );
 });
 
 test("enforces disclosure booleans, score integers, and edit-burden values", () => {
@@ -150,17 +163,13 @@ test("enforces disclosure booleans, score integers, and edit-burden values", () 
   assert.throws(() => assertScoreRecord(cloneValid({ editBurden: "accepted" })), /editBurden/);
 });
 
-test("enforces finite non-negative numeric telemetry and integral count fields", () => {
+test("enforces finite non-negative numeric telemetry and accepts fractions", () => {
   for (const field of ["elapsedMs", "inputTokens", "outputTokens", "costUsd"]) {
     for (const value of [-1, Number.NaN, Number.POSITIVE_INFINITY, "1"]) {
       assert.throws(() => assertScoreRecord(cloneValid({ [field]: value })), new RegExp(field));
     }
+    assert.doesNotThrow(() => assertScoreRecord(cloneValid({ [field]: 1.5 })));
   }
-
-  for (const field of ["elapsedMs", "inputTokens", "outputTokens"]) {
-    assert.throws(() => assertScoreRecord(cloneValid({ [field]: 1.5 })), new RegExp(field));
-  }
-  assert.doesNotThrow(() => assertScoreRecord(cloneValid({ costUsd: 0.0000015 })));
 });
 
 test("summarizes only aggregate fields and passes a complete required sample", () => {
@@ -189,7 +198,7 @@ test("summarizes only aggregate fields and passes a complete required sample", (
   assert.doesNotMatch(JSON.stringify(summary), /outputId|workflow|participant|deploymentRevision/);
 });
 
-test("requires every unique workflow-participant pair and rejects duplicate output ids", () => {
+test("requires every unique workflow-participant pair and rejects duplicate ids or pairs", () => {
   const records = completeSample();
   assert.throws(
     () => summarizeScoreRecords([...records, { ...records[0]!, outputId: records[1]!.outputId }]),
@@ -201,10 +210,33 @@ test("requires every unique workflow-participant pair and rejects duplicate outp
 
   const repeatedPair = [...missingPair, { ...records[1]!, outputId: "repeat-output-id" }];
   assert.equal(repeatedPair.length, 15);
-  assert.equal(summarizeScoreRecords(repeatedPair).pass, false);
+  assert.throws(() => summarizeScoreRecords(repeatedPair), /workflow-participant pair/);
 
   const completeWithInvestigativeRepeat = [...records, { ...records[0]!, outputId: "investigation-repeat" }];
-  assert.equal(summarizeScoreRecords(completeWithInvestigativeRepeat).pass, true);
+  assert.throws(() => summarizeScoreRecords(completeWithInvestigativeRepeat), /workflow-participant pair/);
+});
+
+test("a repeated pair cannot inflate acceptance, disclosure, median, latency, or cost votes", () => {
+  const records = completeSample((record, index) => {
+    if (index < 4) record.editBurden = "major";
+  });
+  assert.equal(summarizeScoreRecords(records).pass, false);
+
+  const duplicateAcceptedVote = {
+    ...records[4]!,
+    outputId: "unique-output-id-for-duplicate-pair",
+    sourceTrace: true,
+    syntheticDisclosure: true,
+    missingDataDisclosure: true,
+    humanReviewLanguage: true,
+    usefulness: 5,
+    factualConsistency: 5,
+    editBurden: "none",
+    elapsedMs: 1,
+    costUsd: 0,
+  };
+
+  assert.throws(() => summarizeScoreRecords([...records, duplicateAcceptedVote]), /workflow-participant pair/);
 });
 
 test("fails each disclosure, quality, latency, cost, and incident threshold independently", () => {
@@ -239,26 +271,21 @@ test("fails each disclosure, quality, latency, cost, and incident threshold inde
   }
 });
 
-test("computes even medians and rounds aggregate cost to six decimal places", () => {
-  const records = completeSample();
-  records.push({
-    ...records[0]!,
-    outputId: "investigation-repeat",
-    usefulness: 5,
-    factualConsistency: 3,
-    elapsedMs: 45_002,
-    costUsd: 0.0000019,
-  });
+test("computes even medians for an incomplete unique sample and rounds cost to six places", () => {
+  const records = completeSample().slice(0, 14);
   records[0]!.usefulness = 3;
-  records[0]!.factualConsistency = 5;
+  records[13]!.usefulness = 5;
   records[0]!.elapsedMs = 44_998;
+  records[13]!.elapsedMs = 45_002;
   records[0]!.costUsd = 0.0000019;
+  records[1]!.costUsd = 0.0000019;
 
   const summary = summarizeScoreRecords(records);
   assert.equal(summary.medianUsefulness, 4);
   assert.equal(summary.medianFactualConsistency, 5);
   assert.equal(summary.medianElapsedMs, 45000);
-  assert.equal(summary.totalCostUsd, 0.280004);
+  assert.equal(summary.totalCostUsd, 0.240004);
+  assert.equal(summary.pass, false);
 });
 
 test("reads non-empty JSONL lines and never logs or exposes record bodies", () => {

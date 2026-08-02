@@ -72,9 +72,14 @@ function assertScore(record, field) {
   if (!Number.isInteger(value) || value < 1 || value > 5) fail(field);
 }
 
-function assertNonNegativeNumber(record, field, { integer = false } = {}) {
+function assertNonEmptyString(record, field) {
   const value = record[field];
-  if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || (integer && !Number.isInteger(value))) {
+  if (typeof value !== "string" || value.trim() === "") fail(field);
+}
+
+function assertNonNegativeNumber(record, field) {
+  const value = record[field];
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
     fail(field);
   }
 }
@@ -91,9 +96,7 @@ export function assertScoreRecord(record) {
     if (!Object.hasOwn(record, key)) fail(key);
   }
 
-  if (typeof record.outputId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9:._-]{0,199}$/.test(record.outputId)) {
-    fail("outputId");
-  }
+  assertNonEmptyString(record, "outputId");
   if (!WORKFLOWS.includes(record.workflow)) fail("workflow");
   if (!PARTICIPANTS.includes(record.participant)) fail("participant");
 
@@ -103,17 +106,13 @@ export function assertScoreRecord(record) {
   assertScore(record, "usefulness");
   assertScore(record, "factualConsistency");
   if (!EDIT_BURDENS.has(record.editBurden)) fail("editBurden");
-  assertNonNegativeNumber(record, "elapsedMs", { integer: true });
-  assertNonNegativeNumber(record, "inputTokens", { integer: true });
-  assertNonNegativeNumber(record, "outputTokens", { integer: true });
+  assertNonNegativeNumber(record, "elapsedMs");
+  assertNonNegativeNumber(record, "inputTokens");
+  assertNonNegativeNumber(record, "outputTokens");
   assertNonNegativeNumber(record, "costUsd");
   if (record.model !== "gpt-5.6-terra") fail("model");
-  if (typeof record.deploymentRevision !== "string" || !/^[0-9a-f]{40}$/.test(record.deploymentRevision)) {
-    fail("deploymentRevision");
-  }
-  if (typeof record.incidentCategory !== "string" || !/^[a-z0-9][a-z0-9-]{0,63}$/.test(record.incidentCategory)) {
-    fail("incidentCategory");
-  }
+  assertNonEmptyString(record, "deploymentRevision");
+  assertNonEmptyString(record, "incidentCategory");
 
   return record;
 }
@@ -142,7 +141,9 @@ export function summarizeScoreRecords(records) {
     assertScoreRecord(record);
     if (outputIds.has(record.outputId)) fail("outputId");
     outputIds.add(record.outputId);
-    workflowParticipantPairs.add(`${record.participant}:${record.workflow}`);
+    const workflowParticipantPair = `${record.participant}:${record.workflow}`;
+    if (workflowParticipantPairs.has(workflowParticipantPair)) fail("workflow-participant pair");
+    workflowParticipantPairs.add(workflowParticipantPair);
 
     if (
       record.sourceTrace &&
