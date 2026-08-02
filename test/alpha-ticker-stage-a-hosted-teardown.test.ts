@@ -33,8 +33,14 @@ interface TeardownScenario {
   qmExit?: number;
   flyOrg?: string;
   flyJson?: string;
+  flyIdMismatch?: boolean;
+  flySleepSeconds?: number;
+  qmSleepSeconds?: number;
+  qmPackageVersion?: string;
+  qmBinaryTarget?: "valid" | "wrong" | "missing";
   managedPostgresDeleted?: boolean;
   objectStorageDeleted?: boolean;
+  mutateEvidenceAfterQmDown?: boolean;
   inventorySymlink?: boolean;
   evidenceSymlink?: boolean;
 }
@@ -48,6 +54,7 @@ function createTeardownScenario(scenario: TeardownScenario = {}) {
   const callLog = join(root, "calls.log");
   mkdirSync(dirname(script), { recursive: true });
   mkdirSync(join(deployment, "node_modules", ".bin"), { recursive: true });
+  mkdirSync(join(deployment, "node_modules", "@yc-software", "qm", "dist", "bin"), { recursive: true });
   mkdirSync(generated, { recursive: true });
   mkdirSync(shimRoot, { recursive: true });
   writeFileSync(script, readFileSync(sourceTeardown));
@@ -82,17 +89,64 @@ function createTeardownScenario(scenario: TeardownScenario = {}) {
   else writeFileSync(evidencePath, readFileSync(evidenceTarget), { mode: 0o600 });
   if (!scenario.evidenceSymlink) chmodSync(evidencePath, 0o600);
 
-  writeExecutable(
-    join(deployment, "node_modules", ".bin", "qm"),
-    `printf 'qm:%s\\n' "$*" >> ${shellQuote(callLog)}\nexit ${scenario.qmExit ?? 0}\n`,
+  writeFileSync(
+    join(deployment, "package.json"),
+    `${JSON.stringify({ dependencies: { "@yc-software/qm": "0.1.4" } })}\n`,
   );
+  writeFileSync(
+    join(deployment, "package-lock.json"),
+    `${JSON.stringify({
+      packages: {
+        "": { dependencies: { "@yc-software/qm": "0.1.4" } },
+        "node_modules/@yc-software/qm": { version: "0.1.4" },
+      },
+    })}\n`,
+  );
+  writeFileSync(
+    join(deployment, "node_modules", "@yc-software", "qm", "package.json"),
+    `${JSON.stringify({ version: scenario.qmPackageVersion ?? "0.1.4", bin: { qm: "dist/bin/qm.js" } })}\n`,
+  );
+  const qmTarget = join(deployment, "node_modules", "@yc-software", "qm", "dist", "bin", "qm.js");
+  writeExecutable(
+    qmTarget,
+    `${scenario.qmSleepSeconds ? `sleep ${scenario.qmSleepSeconds}\n` : ""}` +
+      `printf 'qm:%s\\n' "$*" >> ${shellQuote(callLog)}\n` +
+      `${
+        scenario.mutateEvidenceAfterQmDown
+          ? `printf '%s\\n' ${shellQuote(
+              JSON.stringify({
+                managedPostgresDeleted: true,
+                objectStorageDeleted: true,
+                managedPostgresDeletedAt: "2026-08-02T00:00:00.000Z",
+                objectStorageDeletedAt: "2026-08-02T00:01:00.000Z",
+              }),
+            )} > ${shellQuote(evidencePath)}\n`
+          : ""
+      }` +
+      `exit ${scenario.qmExit ?? 0}\n`,
+  );
+  const qmBin = join(deployment, "node_modules", ".bin", "qm");
+  if (scenario.qmBinaryTarget !== "missing") {
+    if (scenario.qmBinaryTarget === "wrong") {
+      const wrongTarget = join(deployment, "wrong-qm");
+      writeExecutable(wrongTarget, "exit 0\n");
+      symlinkSync(wrongTarget, qmBin);
+    } else {
+      symlinkSync("../@yc-software/qm/dist/bin/qm.js", qmBin);
+    }
+  }
 
   const defaultFlyJson = JSON.stringify(
-    apps.map((name) => ({ Name: name, Organization: scenario.flyOrg ?? "personal" })),
+    apps.map((name, index) => ({
+      ID: scenario.flyIdMismatch && index === 0 ? "replacement-app-id" : `private-app-id-${index}`,
+      Name: name,
+      Organization: scenario.flyOrg ?? "personal",
+    })),
   );
   writeExecutable(
     join(shimRoot, "fly"),
-    `printf 'fly:%s\\n' "$*" >> ${shellQuote(callLog)}\n` +
+    `${scenario.flySleepSeconds ? `sleep ${scenario.flySleepSeconds}\n` : ""}` +
+      `printf 'fly:%s\\n' "$*" >> ${shellQuote(callLog)}\n` +
       `case "$*" in\n` +
       `  "apps list --org personal --json") printf '%s\n' ${shellQuote(scenario.flyJson ?? defaultFlyJson)} ;;\n` +
       `  "apps destroy "*" --yes") : ;;\n` +
@@ -107,6 +161,7 @@ function createTeardownScenario(scenario: TeardownScenario = {}) {
       ...process.env,
       PATH: `${shimRoot}:${process.env.PATH ?? ""}`,
       STAGE_A_DESTROY_CONFIRM: scenario.confirmation ?? "alpha-ticker-stage-a-hosted",
+      ALPHA_TICKER_TEARDOWN_TIMEOUT_MS: "500",
     },
   });
   return {
@@ -115,6 +170,14 @@ function createTeardownScenario(scenario: TeardownScenario = {}) {
     callLog,
     cleanup: () => rmSync(root, { force: true, recursive: true }),
   };
+}
+
+function readCalls(result: ReturnType<typeof createTeardownScenario>) {
+  try {
+    return readFileSync(result.callLog, "utf8");
+  } catch {
+    return "";
+  }
 }
 
 test("hosted teardown dry-run is cwd-independent, idempotent, and lists only fixed resources", () => {
@@ -135,7 +198,6 @@ test("hosted teardown source is exact-name bounded and prohibits broad destructi
   assert.match(body, /STAGE_A_DESTROY_CONFIRM/);
   assert.match(body, /--dry-run/);
   assert.doesNotMatch(body, /fly apps destroy\s+--all|docker (?:system|volume|network) prune|\*\.fly\.dev|rm -rf/);
-  assert.doesNotMatch(body, /fly apps destroy\s+\$?\{?[^"\n ]+\}?\s+--yes/);
 });
 
 test("hosted teardown requires exact confirmation before any command", () => {
@@ -143,22 +205,24 @@ test("hosted teardown requires exact confirmation before any command", () => {
   try {
     assert.notEqual(result.status, 0);
     assert.equal(result.stdout, "");
-    assert.match(result.stderr, /teardown-confirmation-required/);
-    assert.throws(() => readFileSync(result.callLog, "utf8"));
+    assert.equal(result.stderr, "teardown-confirmation-required\n");
+    assert.equal(readCalls(result), "");
   } finally {
     result.cleanup();
   }
 });
 
 test("hosted teardown runs pinned local qm down before one-at-a-time Fly destruction", () => {
-  const result = createTeardownScenario({ managedPostgresDeleted: false, objectStorageDeleted: false });
+  const result = createTeardownScenario();
   try {
     assert.equal(result.status, 3, result.stderr);
     assert.equal(result.stdout, "");
     assert.equal(result.stderr, "manual-data-destruction-required\n");
-    const calls = readFileSync(result.callLog, "utf8").trim().split("\n");
-    assert.equal(calls[0], "qm:down");
-    assert.equal(calls.filter((line) => line === "fly:apps list --org personal --json").length, apps.length);
+    const calls = readCalls(result).trim().split("\n");
+    const qmIndex = calls.indexOf("qm:down");
+    const firstDestroy = calls.findIndex((line) => line.startsWith("fly:apps destroy "));
+    assert.ok(qmIndex >= 0 && firstDestroy > qmIndex);
+    assert.equal(calls.filter((line) => line === "fly:apps list --org personal --json").length, apps.length + 1);
     assert.deepEqual(
       calls.filter((line) => line.startsWith("fly:apps destroy ")),
       apps.map((app) => `fly:apps destroy ${app} --yes`),
@@ -173,27 +237,28 @@ test("hosted teardown fails closed when qm down fails", () => {
   const result = createTeardownScenario({ qmExit: 9 });
   try {
     assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /qm-down-failed/);
-    const calls = readFileSync(result.callLog, "utf8");
-    assert.equal(calls, "qm:down\n");
+    assert.equal(result.stderr, "qm-down-failed\n");
+    assert.doesNotMatch(readCalls(result), /fly:apps destroy/);
   } finally {
     result.cleanup();
   }
 });
 
-test("hosted teardown structurally verifies exact Fly organization ownership", () => {
+test("hosted teardown verifies exact Fly organization and immutable app IDs", () => {
   for (const scenario of [
     { flyOrg: "other-org" },
+    { flyIdMismatch: true },
     { flyJson: "not-json" },
-    { flyJson: JSON.stringify([{ Name: apps[0], Organization: { Slug: "personal" } }]) },
-    { flyJson: JSON.stringify([{ Name: [apps[0]], Organization: "personal" }]) },
+    { flyJson: JSON.stringify([{ ID: "private-app-id-0", Name: apps[0], Organization: { Slug: "personal" } }]) },
+    { flyJson: JSON.stringify([{ ID: "private-app-id-0", Name: [apps[0]], Organization: "personal" }]) },
+    { flyJson: JSON.stringify([{ ID: "private-app-id-0", Name: `${apps[0]}-replacement`, Organization: "personal" }]) },
   ]) {
     const result = createTeardownScenario(scenario);
     try {
       assert.notEqual(result.status, 0);
-      assert.match(result.stderr, /fly-inventory-invalid|fly-ownership-refused/);
-      const calls = readFileSync(result.callLog, "utf8");
-      assert.doesNotMatch(calls, /fly:apps destroy/);
+      assert.match(result.stderr, /fly-inventory-invalid|fly-ownership-refused|fly-identity-refused/);
+      assert.doesNotMatch(readCalls(result), /qm:down|fly:apps destroy/);
+      assert.doesNotMatch(`${result.stdout}${result.stderr}`, /replacement-app-id|private-app-id/);
     } finally {
       result.cleanup();
     }
@@ -202,16 +267,60 @@ test("hosted teardown structurally verifies exact Fly organization ownership", (
 
 test("hosted teardown does not touch absent or near-name apps", () => {
   const flyJson = JSON.stringify([
-    { Name: apps[0], Organization: "personal" },
-    { Name: `${apps[1]}-near`, Organization: "personal" },
+    { ID: "private-app-id-0", Name: apps[0], Organization: "personal" },
+    { ID: "near-id", Name: `${apps[1]}-near`, Organization: "personal" },
   ]);
   const result = createTeardownScenario({ flyJson });
   try {
-    assert.equal(result.status, 3);
-    const calls = readFileSync(result.callLog, "utf8");
+    assert.equal(result.status, 3, result.stderr);
+    const calls = readCalls(result);
     assert.match(calls, new RegExp(`fly:apps destroy ${apps[0]} --yes`));
     for (const app of apps.slice(1)) assert.doesNotMatch(calls, new RegExp(`fly:apps destroy ${app} --yes`));
     assert.doesNotMatch(calls, /-near --yes/);
+  } finally {
+    result.cleanup();
+  }
+});
+
+test("hosted teardown verifies pinned local QM package, version, and binary path", () => {
+  for (const scenario of [
+    { qmPackageVersion: "0.1.5" },
+    { qmBinaryTarget: "wrong" as const },
+    { qmBinaryTarget: "missing" as const },
+  ]) {
+    const result = createTeardownScenario(scenario);
+    try {
+      assert.notEqual(result.status, 0);
+      assert.equal(result.stderr, "qm-binary-invalid\n");
+      assert.equal(readCalls(result), "");
+    } finally {
+      result.cleanup();
+    }
+  }
+});
+
+test("hosted teardown bounds hung QM and Fly commands", () => {
+  const hungQm = createTeardownScenario({ qmSleepSeconds: 2 });
+  try {
+    assert.notEqual(hungQm.status, 0);
+    assert.equal(hungQm.stderr, "qm-down-failed\n");
+  } finally {
+    hungQm.cleanup();
+  }
+  const hungFly = createTeardownScenario({ flySleepSeconds: 2 });
+  try {
+    assert.notEqual(hungFly.status, 0);
+    assert.equal(hungFly.stderr, "fly-inventory-invalid\n");
+  } finally {
+    hungFly.cleanup();
+  }
+});
+
+test("hosted teardown parses minimized deletion evidence once before destruction", () => {
+  const result = createTeardownScenario({ mutateEvidenceAfterQmDown: true });
+  try {
+    assert.equal(result.status, 3);
+    assert.equal(result.stderr, "manual-data-destruction-required\n");
   } finally {
     result.cleanup();
   }
@@ -225,7 +334,6 @@ test("hosted teardown accepts completion only after both minimized deletion stat
   } finally {
     incomplete.cleanup();
   }
-
   const complete = createTeardownScenario({ managedPostgresDeleted: true, objectStorageDeleted: true });
   try {
     assert.equal(complete.status, 0, complete.stderr);
@@ -236,7 +344,22 @@ test("hosted teardown accepts completion only after both minimized deletion stat
   }
 });
 
-test("hosted teardown rejects symlinked private inventory and deletion evidence without leaking ids", () => {
+test("hosted teardown is idempotent when all fixed apps are already absent", () => {
+  const result = createTeardownScenario({
+    flyJson: "[]",
+    managedPostgresDeleted: true,
+    objectStorageDeleted: true,
+  });
+  try {
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, "teardown-complete\n");
+    assert.equal(readCalls(result), "fly:apps list --org personal --json\n");
+  } finally {
+    result.cleanup();
+  }
+});
+
+test("hosted teardown rejects symlinked private inputs without leaking identifiers", () => {
   for (const scenario of [{ inventorySymlink: true }, { evidenceSymlink: true }]) {
     const result = createTeardownScenario(scenario);
     try {

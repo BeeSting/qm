@@ -2,15 +2,9 @@
 
 set -euo pipefail
 
-EXPECTED_ORG="personal"
 EXPECTED_CONFIRM="alpha-ticker-stage-a-hosted"
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(CDPATH= cd -- "${SCRIPT_DIR}/../.." && pwd)
-DEPLOYMENT_ROOT="${REPO_ROOT}/deploy/layers/alpha-ticker-stage-a-hosted"
-GENERATED_ROOT="${REPO_ROOT}/.generated/alpha-ticker-stage-a-hosted"
-QM_BIN="${DEPLOYMENT_ROOT}/node_modules/.bin/qm"
-INVENTORY_FILE="${GENERATED_ROOT}/resource-inventory.json"
-TEARDOWN_EVIDENCE_FILE="${GENERATED_ROOT}/teardown-evidence.json"
 
 APPS=(
   alpha-ticker-stage-a-hosted-core
@@ -31,90 +25,6 @@ fail() {
   exit 1
 }
 
-file_mode() {
-  local mode
-  mode=$(stat -f '%Lp' "$1" 2>/dev/null || true)
-  case "$mode" in
-    ""|*[!0-7]*) mode=$(stat -c '%a' "$1" 2>/dev/null || true) ;;
-  esac
-  printf '%s' "$mode"
-}
-
-validate_private_json_file() {
-  local path=$1
-  local kind=$2
-  if [[ ! -f "$path" || -L "$path" || "$(file_mode "$path")" != "600" ]]; then
-    fail "$kind"
-  fi
-  node - "$path" "$kind" <<'NODE' >/dev/null 2>&1 || fail "$kind"
-const fs = require("node:fs");
-const [path, kind] = process.argv.slice(2);
-const stat = fs.lstatSync(path);
-if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 65536) process.exit(2);
-const value = JSON.parse(fs.readFileSync(path, "utf8"));
-if (!value || typeof value !== "object" || Array.isArray(value)) process.exit(2);
-if (kind === "resource-inventory-invalid") {
-  const apps = [
-    "alpha-ticker-stage-a-hosted-core",
-    "alpha-ticker-stage-a-hosted-web-ui",
-    "alpha-ticker-stage-a-hosted-admin",
-    "alpha-ticker-stage-a-hosted-portal",
-    "alpha-ticker-stage-a-hosted-auth",
-    "alpha-ticker-stage-a-hosted-sandboxes",
-    "alpha-ticker-stage-a-egress",
-  ];
-  if (value.flyOrg !== "personal" || !Array.isArray(value.apps) || value.apps.length !== apps.length) process.exit(2);
-  for (let i = 0; i < apps.length; i += 1) {
-    const entry = value.apps[i];
-    if (!entry || Object.keys(entry).sort().join(",") !== "id,name" || entry.name !== apps[i] || typeof entry.id !== "string" || !entry.id) process.exit(2);
-  }
-  const pairs = [
-    [value.managedPostgres, "alpha-ticker-stage-a-hosted-pg"],
-    [value.objectStorage, "alpha-ticker-stage-a-hosted-data"],
-    [value.sandboxRegistry, "alpha-ticker-stage-a-hosted-sandboxes"],
-  ];
-  for (const [entry, expected] of pairs) {
-    if (!entry || Object.keys(entry).sort().join(",") !== "id,name" || entry.name !== expected || typeof entry.id !== "string" || !entry.id) process.exit(2);
-  }
-} else {
-  const keys = ["managedPostgresDeleted", "objectStorageDeleted", "managedPostgresDeletedAt", "objectStorageDeletedAt"];
-  if (Object.keys(value).sort().join(",") !== [...keys].sort().join(",")) process.exit(2);
-  for (const prefix of ["managedPostgres", "objectStorage"]) {
-    const deleted = value[`${prefix}Deleted`];
-    const timestamp = value[`${prefix}DeletedAt`];
-    if (typeof deleted !== "boolean") process.exit(2);
-    if (deleted ? typeof timestamp !== "string" || !Number.isFinite(Date.parse(timestamp)) : timestamp !== null) process.exit(2);
-  }
-}
-NODE
-}
-
-fly_app_state() {
-  local app=$1
-  local json
-  json=$(fly apps list --org "$EXPECTED_ORG" --json 2>/dev/null) || fail "fly-inventory-invalid"
-  FLY_APP="$app" FLY_ORG="$EXPECTED_ORG" FLY_JSON="$json" node <<'NODE'
-let inventory;
-try {
-  inventory = JSON.parse(process.env.FLY_JSON);
-} catch {
-  process.exit(4);
-}
-if (!Array.isArray(inventory)) process.exit(4);
-const expected = process.env.FLY_APP;
-const exact = [];
-for (const entry of inventory) {
-  if (!entry || typeof entry !== "object" || Array.isArray(entry)) process.exit(4);
-  if (typeof entry.Name !== "string" || typeof entry.Organization !== "string") process.exit(4);
-  if (entry.Name === expected) exact.push(entry);
-}
-if (exact.length > 1) process.exit(4);
-if (exact.length === 0) process.exit(0);
-if (exact[0].Organization !== process.env.FLY_ORG) process.exit(5);
-process.exit(10);
-NODE
-}
-
 if [[ "${1:-}" == "--dry-run" && $# -eq 1 ]]; then
   printf '%s\n' "${APPS[@]}" "${DATA_RESOURCES[@]}"
   exit 0
@@ -127,42 +37,248 @@ if [[ "${STAGE_A_DESTROY_CONFIRM:-}" != "$EXPECTED_CONFIRM" ]]; then
   fail "teardown-confirmation-required"
 fi
 
-validate_private_json_file "$INVENTORY_FILE" "resource-inventory-invalid"
-validate_private_json_file "$TEARDOWN_EVIDENCE_FILE" "teardown-evidence-invalid"
+node - "$REPO_ROOT" <<'NODE'
+"use strict";
 
-if [[ ! -x "$QM_BIN" || -L "$QM_BIN" ]]; then
-  fail "qm-binary-invalid"
-fi
-if ! (cd "$DEPLOYMENT_ROOT" && "$QM_BIN" down >/dev/null 2>&1); then
-  fail "qm-down-failed"
-fi
+const { spawnSync } = require("node:child_process");
+const { closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpathSync } = require("node:fs");
+const { join, resolve } = require("node:path");
 
-for app in "${APPS[@]}"; do
-  set +e
-  fly_app_state "$app"
-  state=$?
-  set -e
-  case "$state" in
-    0) ;;
-    10) fly apps destroy "$app" --yes >/dev/null 2>&1 || fail "fly-destroy-failed" ;;
-    5) fail "fly-ownership-refused" ;;
-    *) fail "fly-inventory-invalid" ;;
-  esac
-done
+const root = resolve(process.argv[2]);
+const deployment = join(root, "deploy", "layers", "alpha-ticker-stage-a-hosted");
+const generated = join(root, ".generated", "alpha-ticker-stage-a-hosted");
+const expectedOrg = "personal";
+const expectedQmVersion = "0.1.4";
+const expectedQmBinRelative = "dist/bin/qm.js";
+const apps = [
+  "alpha-ticker-stage-a-hosted-core",
+  "alpha-ticker-stage-a-hosted-web-ui",
+  "alpha-ticker-stage-a-hosted-admin",
+  "alpha-ticker-stage-a-hosted-portal",
+  "alpha-ticker-stage-a-hosted-auth",
+  "alpha-ticker-stage-a-hosted-sandboxes",
+  "alpha-ticker-stage-a-egress",
+];
+const inventoryPath = join(generated, "resource-inventory.json");
+const teardownEvidencePath = join(generated, "teardown-evidence.json");
+const maxInputBytes = 64 * 1024;
+const maxCommandBytes = 64 * 1024;
+const timeoutCandidate = Number(process.env.ALPHA_TICKER_TEARDOWN_TIMEOUT_MS ?? "15000");
+const requestedTimeoutMs =
+  Number.isSafeInteger(timeoutCandidate) && timeoutCandidate >= 100 && timeoutCandidate <= 30_000
+    ? timeoutCandidate
+    : null;
+const timeoutMs = requestedTimeoutMs === null ? null : Math.max(requestedTimeoutMs, 1_500);
 
-if node - "$TEARDOWN_EVIDENCE_FILE" <<'NODE' >/dev/null 2>&1
-const fs = require("node:fs");
-const value = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
-process.exit(value.managedPostgresDeleted === true && value.objectStorageDeleted === true ? 0 : 3);
+function stop(message, status = 1) {
+  process.stderr.write(`${message}\n`);
+  process.exit(status);
+}
+
+function exactObject(value, keys, kind) {
+  if (typeof value !== "object" || value === null || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype) {
+    stop(kind);
+  }
+  const actual = Object.keys(value);
+  if (actual.length !== keys.length || keys.some((key) => !Object.hasOwn(value, key))) stop(kind);
+}
+
+function sameIdentity(left, right) {
+  return (
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.size === right.size &&
+    left.mtimeNs === right.mtimeNs &&
+    left.ctimeNs === right.ctimeNs
+  );
+}
+
+function snapshotFile(path, kind, { privateMode = false, maxBytes = maxInputBytes } = {}) {
+  let descriptor;
+  try {
+    const before = lstatSync(path, { bigint: true });
+    if (before.isSymbolicLink() || !before.isFile() || before.size > BigInt(maxBytes)) stop(kind);
+    if (privateMode && Number(before.mode & 0o777n) !== 0o600) stop(kind);
+    if (!Number.isInteger(constants.O_NOFOLLOW)) stop(kind);
+    descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const opened = fstatSync(descriptor, { bigint: true });
+    if (!opened.isFile() || !sameIdentity(before, opened) || opened.size > BigInt(maxBytes)) stop(kind);
+    const buffer = Buffer.alloc(maxBytes + 1);
+    let total = 0;
+    while (total < buffer.length) {
+      const count = readSync(descriptor, buffer, total, buffer.length - total, null);
+      if (count === 0) break;
+      total += count;
+    }
+    const afterRead = fstatSync(descriptor, { bigint: true });
+    const afterPath = lstatSync(path, { bigint: true });
+    if (
+      total > maxBytes ||
+      BigInt(total) !== opened.size ||
+      !sameIdentity(opened, afterRead) ||
+      afterPath.isSymbolicLink() ||
+      !afterPath.isFile() ||
+      !sameIdentity(opened, afterPath)
+    ) {
+      stop(kind);
+    }
+    return Buffer.from(buffer.subarray(0, total));
+  } catch (error) {
+    if (error && error.__teardownStop) throw error;
+    stop(kind);
+  } finally {
+    if (descriptor !== undefined) {
+      try {
+        closeSync(descriptor);
+      } catch {
+        // Preserve the fixed primary error surface.
+      }
+    }
+  }
+}
+
+function parseJsonSnapshot(path, kind, options) {
+  try {
+    const value = JSON.parse(snapshotFile(path, kind, options).toString("utf8"));
+    if (typeof value !== "object" || value === null || Array.isArray(value)) stop(kind);
+    return value;
+  } catch {
+    stop(kind);
+  }
+}
+
+function validateInventory() {
+  const value = parseJsonSnapshot(inventoryPath, "resource-inventory-invalid", { privateMode: true });
+  exactObject(
+    value,
+    ["flyOrg", "apps", "managedPostgres", "objectStorage", "sandboxRegistry"],
+    "resource-inventory-invalid",
+  );
+  if (value.flyOrg !== expectedOrg || !Array.isArray(value.apps) || value.apps.length !== apps.length) {
+    stop("resource-inventory-invalid");
+  }
+  const ids = new Set();
+  const validateEntry = (entry, expectedName) => {
+    exactObject(entry, ["name", "id"], "resource-inventory-invalid");
+    if (entry.name !== expectedName || typeof entry.id !== "string" || !/^[A-Za-z0-9._:-]{1,255}$/.test(entry.id)) {
+      stop("resource-inventory-invalid");
+    }
+    if (ids.has(entry.id)) stop("resource-inventory-invalid");
+    ids.add(entry.id);
+    return entry.id;
+  };
+  const appIds = new Map();
+  value.apps.forEach((entry, index) => appIds.set(apps[index], validateEntry(entry, apps[index])));
+  validateEntry(value.managedPostgres, "alpha-ticker-stage-a-hosted-pg");
+  validateEntry(value.objectStorage, "alpha-ticker-stage-a-hosted-data");
+  validateEntry(value.sandboxRegistry, "alpha-ticker-stage-a-hosted-sandboxes");
+  return appIds;
+}
+
+function validateTeardownEvidence() {
+  const value = parseJsonSnapshot(teardownEvidencePath, "teardown-evidence-invalid", { privateMode: true });
+  exactObject(
+    value,
+    ["managedPostgresDeleted", "objectStorageDeleted", "managedPostgresDeletedAt", "objectStorageDeletedAt"],
+    "teardown-evidence-invalid",
+  );
+  for (const prefix of ["managedPostgres", "objectStorage"]) {
+    const deleted = value[`${prefix}Deleted`];
+    const timestamp = value[`${prefix}DeletedAt`];
+    if (typeof deleted !== "boolean") stop("teardown-evidence-invalid");
+    if (deleted ? typeof timestamp !== "string" || !Number.isFinite(Date.parse(timestamp)) : timestamp !== null) {
+      stop("teardown-evidence-invalid");
+    }
+  }
+  return value.managedPostgresDeleted === true && value.objectStorageDeleted === true;
+}
+
+function run(command, args, failure) {
+  if (timeoutMs === null) stop(failure);
+  const result = spawnSync(command, args, {
+    cwd: deployment,
+    encoding: "utf8",
+    input: "",
+    timeout: timeoutMs,
+    killSignal: "SIGTERM",
+    maxBuffer: maxCommandBytes,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (result.error || result.status !== 0 || result.signal !== null) stop(failure);
+  if (Buffer.byteLength(result.stdout ?? "", "utf8") > maxCommandBytes) stop(failure);
+  return result.stdout;
+}
+
+function verifyQmBinary() {
+  const packageJson = parseJsonSnapshot(join(deployment, "package.json"), "qm-binary-invalid");
+  const packageLock = parseJsonSnapshot(join(deployment, "package-lock.json"), "qm-binary-invalid");
+  const installedPackage = parseJsonSnapshot(
+    join(deployment, "node_modules", "@yc-software", "qm", "package.json"),
+    "qm-binary-invalid",
+  );
+  if (
+    packageJson.dependencies?.["@yc-software/qm"] !== expectedQmVersion ||
+    packageLock.packages?.[""]?.dependencies?.["@yc-software/qm"] !== expectedQmVersion ||
+    packageLock.packages?.["node_modules/@yc-software/qm"]?.version !== expectedQmVersion ||
+    installedPackage.version !== expectedQmVersion ||
+    installedPackage.bin?.qm !== expectedQmBinRelative
+  ) {
+    stop("qm-binary-invalid");
+  }
+  const expectedTarget = join(deployment, "node_modules", "@yc-software", "qm", expectedQmBinRelative);
+  const shim = join(deployment, "node_modules", ".bin", "qm");
+  try {
+    const targetStat = lstatSync(expectedTarget);
+    const shimStat = lstatSync(shim);
+    if (!targetStat.isFile() || (targetStat.mode & 0o111) === 0 || !shimStat.isSymbolicLink()) stop("qm-binary-invalid");
+    if (realpathSync(shim) !== realpathSync(expectedTarget)) stop("qm-binary-invalid");
+  } catch {
+    stop("qm-binary-invalid");
+  }
+  return expectedTarget;
+}
+
+function parseFlyInventory(text, appIds) {
+  let value;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    stop("fly-inventory-invalid");
+  }
+  if (!Array.isArray(value) || value.length > 10_000) stop("fly-inventory-invalid");
+  const exact = new Map();
+  const expectedIds = new Map([...appIds.entries()].map(([name, id]) => [id, name]));
+  for (const entry of value) {
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) stop("fly-inventory-invalid");
+    if (typeof entry.ID !== "string" || typeof entry.Name !== "string" || typeof entry.Organization !== "string") {
+      stop("fly-inventory-invalid");
+    }
+    if (expectedIds.has(entry.ID) && expectedIds.get(entry.ID) !== entry.Name) stop("fly-identity-refused");
+    if (!appIds.has(entry.Name)) continue;
+    if (exact.has(entry.Name)) stop("fly-inventory-invalid");
+    if (entry.Organization !== expectedOrg) stop("fly-ownership-refused");
+    if (entry.ID !== appIds.get(entry.Name)) stop("fly-identity-refused");
+    exact.set(entry.Name, true);
+  }
+  return exact;
+}
+
+function listFlyApps(appIds) {
+  return parseFlyInventory(run("fly", ["apps", "list", "--org", expectedOrg, "--json"], "fly-inventory-invalid"), appIds);
+}
+
+const appIds = validateInventory();
+const deletionComplete = validateTeardownEvidence();
+const qmBin = verifyQmBinary();
+const initialApps = listFlyApps(appIds);
+if (initialApps.size > 0) {
+  run(qmBin, ["down"], "qm-down-failed");
+  for (const app of apps) {
+    const current = listFlyApps(appIds);
+    if (current.has(app)) run("fly", ["apps", "destroy", app, "--yes"], "fly-destroy-failed");
+  }
+}
+
+if (!deletionComplete) stop("manual-data-destruction-required", 3);
+process.stdout.write("teardown-complete\n");
 NODE
-then
-  printf 'teardown-complete\n'
-  exit 0
-else
-  status=$?
-  if [[ "$status" -eq 3 ]]; then
-    printf 'manual-data-destruction-required\n' >&2
-    exit 3
-  fi
-  fail "teardown-evidence-invalid"
-fi

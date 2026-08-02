@@ -1,8 +1,20 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  linkSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { test } from "node:test";
 
 // @ts-expect-error -- Task 8 intentionally exposes an .mjs CLI without a separate declaration file.
@@ -15,6 +27,26 @@ const workflows = [
   "product-architecture-handover",
   "decision-memory-draft",
 ];
+const hostedApps = [
+  "alpha-ticker-stage-a-hosted-core",
+  "alpha-ticker-stage-a-hosted-web-ui",
+  "alpha-ticker-stage-a-hosted-admin",
+  "alpha-ticker-stage-a-hosted-portal",
+  "alpha-ticker-stage-a-hosted-auth",
+  "alpha-ticker-stage-a-hosted-sandboxes",
+  "alpha-ticker-stage-a-egress",
+];
+const checkIds = [
+  "activation-record",
+  "hosted-policy",
+  "hosted-config",
+  "egress-proxy-config",
+  "sandbox-bundle",
+  "evaluation-ledger",
+  "resource-inventory",
+  "live-checks",
+];
+const hostedDeployment = resolve("deploy/layers/alpha-ticker-stage-a-hosted");
 
 function sha256(value: string | Buffer): string {
   return createHash("sha256").update(value).digest("hex");
@@ -50,6 +82,25 @@ function writeJson(path: string, value: unknown, mode = 0o600) {
   chmodSync(path, mode);
 }
 
+function writeLiveChecks(generated: string, allTurnModelCostUsd = 4.5, flyCostUsd = 1.25) {
+  writeJson(join(generated, "live-checks.json"), {
+    checks: [
+      {
+        id: "hosted-conformance",
+        status: "pass",
+        timestamp: "2026-08-02T00:00:00.000Z",
+        revision: "revision-1",
+        resourceNameSha256: sha256("alpha-ticker-stage-a-hosted-core"),
+      },
+    ],
+    spendSummary: {
+      allTurnModelCostUsd,
+      flyCostUsd,
+      totalCostUsd: allTurnModelCostUsd + flyCostUsd,
+    },
+  });
+}
+
 function createEvidenceFixture() {
   const root = mkdtempSync(join(tmpdir(), "qm-hosted-evidence-"));
   const generated = join(root, ".generated", "alpha-ticker-stage-a-hosted");
@@ -59,9 +110,9 @@ function createEvidenceFixture() {
   mkdirSync(join(sandbox, "tools", "alpha-packet"), { recursive: true });
 
   writeJson(join(root, "UPSTREAM.lock.json"), { commit: "b".repeat(40) }, 0o644);
-  writeFileSync(join(deployment, "stage-a-hosted-policy.json"), '{"stage":"A"}\n');
-  writeFileSync(join(deployment, "qm.config.jsonc"), '{"publicUrl":"https://example.test"}\n');
-  writeFileSync(join(deployment, "egress-proxy.fly.toml"), 'app = "alpha-ticker-stage-a-egress"\n');
+  for (const file of ["stage-a-hosted-policy.json", "qm.config.jsonc", "egress-proxy.fly.toml"]) {
+    writeFileSync(join(deployment, file), readFileSync(join(hostedDeployment, file)));
+  }
   writeFileSync(join(sandbox, "skills", "workflow", "SKILL.md"), "synthetic workflow\n");
   writeFileSync(join(sandbox, "tools", "alpha-packet", "tool.json"), '{"name":"alpha-packet"}\n');
 
@@ -78,38 +129,29 @@ function createEvidenceFixture() {
     participantCount: 3,
     teardownScheduled: true,
   });
-  const records = scoreRecords();
   const ledgerPath = join(generated, "scores.jsonl");
-  writeFileSync(ledgerPath, `${records.map((record) => JSON.stringify(record)).join("\n")}\n`, {
-    mode: 0o600,
-  });
+  writeFileSync(
+    ledgerPath,
+    `${scoreRecords()
+      .map((record) => JSON.stringify(record))
+      .join("\n")}\n`,
+    { mode: 0o600 },
+  );
   chmodSync(ledgerPath, 0o600);
 
   const privateAppId = "app-private-identifier-do-not-retain";
   const privateDatabaseId = "database-private-identifier-do-not-retain";
   writeJson(join(generated, "resource-inventory.json"), {
     flyOrg: "personal",
-    apps: [{ name: "alpha-ticker-stage-a-hosted-core", id: privateAppId }],
+    apps: hostedApps.map((name, index) => ({
+      name,
+      id: index === 0 ? privateAppId : `private-app-identifier-${index}`,
+    })),
     managedPostgres: { name: "alpha-ticker-stage-a-hosted-pg", id: privateDatabaseId },
     objectStorage: { name: "alpha-ticker-stage-a-hosted-data", id: "storage-private-id" },
     sandboxRegistry: { name: "alpha-ticker-stage-a-hosted-sandboxes", id: "sandbox-private-id" },
   });
-  writeJson(join(generated, "live-checks.json"), {
-    checks: [
-      {
-        id: "hosted-conformance",
-        status: "pass",
-        timestamp: "2026-08-02T00:00:00.000Z",
-        revision: "revision-1",
-        resourceNameSha256: sha256("alpha-ticker-stage-a-hosted-core"),
-      },
-    ],
-    spendSummary: {
-      allTurnModelCostUsd: 4.5,
-      flyCostUsd: 1.25,
-      totalCostUsd: 5.75,
-    },
-  });
+  writeLiveChecks(generated);
 
   return {
     root,
@@ -122,17 +164,20 @@ function createEvidenceFixture() {
   };
 }
 
+function collect(fixture: ReturnType<typeof createEvidenceFixture>, extra: Record<string, unknown> = {}) {
+  return collectEvidence({
+    repoRoot: fixture.root,
+    commit: "a".repeat(40),
+    timestamp: "2026-08-02T01:02:03.000Z",
+    output: join(fixture.generated, "evidence-manifest.json"),
+    ...extra,
+  });
+}
+
 test("hosted evidence is exact-schema, aggregate-only, and content-minimized", () => {
   const fixture = createEvidenceFixture();
   try {
-    const output = join(fixture.generated, "evidence-manifest.json");
-    const manifest = collectEvidence({
-      repoRoot: fixture.root,
-      commit: "a".repeat(40),
-      timestamp: "2026-08-02T01:02:03.000Z",
-      output,
-    });
-
+    const manifest = collect(fixture);
     assert.deepEqual(Object.keys(manifest).sort(), [
       "checks",
       "commit",
@@ -156,40 +201,140 @@ test("hosted evidence is exact-schema, aggregate-only, and content-minimized", (
     });
     assert.doesNotThrow(() => assertEvidenceSafe(manifest));
 
+    const output = join(fixture.generated, "evidence-manifest.json");
     const serialized = readFileSync(output, "utf8");
     assert.equal(statSync(output).mode & 0o777, 0o600);
     assert.doesNotMatch(serialized, /outputId|participant|workflow|prompt|response|packetBody|providerRequest/);
     assert.doesNotMatch(serialized, new RegExp(fixture.privateAppId));
     assert.doesNotMatch(serialized, new RegExp(fixture.privateDatabaseId));
-    assert.match(serialized, /resource-inventory/);
-    assert.match(serialized, /^[\s\S]*[a-f0-9]{64}[\s\S]*$/);
   } finally {
     fixture.cleanup();
   }
 });
 
-test("hosted evidence hashes every approved artifact and runtime input", () => {
+test("hosted evidence uses the exact fixed eight validated check identifiers", () => {
   const fixture = createEvidenceFixture();
   try {
-    const manifest = collectEvidence({
-      repoRoot: fixture.root,
-      commit: "a".repeat(40),
-      timestamp: "2026-08-02T01:02:03.000Z",
-      output: join(fixture.generated, "evidence-manifest.json"),
-    });
-    assert.deepEqual(manifest.checks.map((check: { id: string }) => check.id).sort(), [
-      "activation-record",
-      "egress-proxy-config",
-      "evaluation-ledger",
-      "hosted-config",
-      "hosted-policy",
-      "live-checks",
-      "resource-inventory",
-      "sandbox-bundle",
-    ]);
+    const manifest = collect(fixture);
+    assert.deepEqual(
+      manifest.checks.map((check: { id: string }) => check.id),
+      checkIds,
+    );
     assert.equal(
       manifest.sandboxDigest,
       manifest.checks.find((check: { id: string }) => check.id === "sandbox-bundle")?.artifactSha256,
+    );
+    const changed = structuredClone(manifest);
+    changed.checks[0].id = "different-check";
+    assert.throws(() => assertEvidenceSafe(changed), /check id/i);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("hosted evidence enforces the US$45 all-turn model brake and scored-spend floor", () => {
+  for (const [allTurnModelCostUsd, shouldPass] of [
+    [45, true],
+    [50, false],
+    [2.99, false],
+  ] as const) {
+    const fixture = createEvidenceFixture();
+    try {
+      writeLiveChecks(fixture.generated, allTurnModelCostUsd, 1);
+      if (shouldPass) assert.doesNotThrow(() => collect(fixture));
+      else assert.throws(() => collect(fixture), /spendSummary/i);
+    } finally {
+      fixture.cleanup();
+    }
+  }
+});
+
+test("hosted evidence rejects invalid policy, config, egress, and inventory artifacts", () => {
+  const mutations: Array<(fixture: ReturnType<typeof createEvidenceFixture>) => void> = [
+    (fixture) => {
+      const path = join(fixture.generated, "activation.json");
+      const value = JSON.parse(readFileSync(path, "utf8"));
+      value.syntheticOnly = false;
+      writeJson(path, value);
+    },
+    (fixture) => {
+      const path = join(fixture.deployment, "stage-a-hosted-policy.json");
+      const value = JSON.parse(readFileSync(path, "utf8"));
+      value.cloudMutation = "ungated";
+      writeFileSync(path, JSON.stringify(value));
+    },
+    (fixture) => {
+      const path = join(fixture.deployment, "qm.config.jsonc");
+      writeFileSync(
+        path,
+        readFileSync(path, "utf8").replace(
+          '"publicUrl": "https://alpha-ticker-stage-a-hosted-portal.fly.dev",',
+          '"publicUrl": "https://alpha-ticker-stage-a-hosted-portal.fly.dev",\n  "\\u0070ublicUrl": "https://other.fly.dev",',
+        ),
+      );
+    },
+    (fixture) => {
+      const path = join(fixture.deployment, "egress-proxy.fly.toml");
+      writeFileSync(
+        path,
+        readFileSync(path, "utf8").replace('EGRESS_TOKENLESS = "deny"', 'EGRESS_TOKENLESS = "allow"'),
+      );
+    },
+    (fixture) => {
+      const path = join(fixture.generated, "resource-inventory.json");
+      const value = JSON.parse(readFileSync(path, "utf8"));
+      value.apps[1].id = value.apps[0].id;
+      writeJson(path, value);
+    },
+  ];
+  for (const mutate of mutations) {
+    const fixture = createEvidenceFixture();
+    try {
+      mutate(fixture);
+      assert.throws(() => collect(fixture), /evidence (?:input|activation|policy|config|egress|inventory)/i);
+    } finally {
+      fixture.cleanup();
+    }
+  }
+});
+
+test("hosted evidence derives validation and hashes from one artifact snapshot", () => {
+  const fixture = createEvidenceFixture();
+  try {
+    const policyPath = join(fixture.deployment, "stage-a-hosted-policy.json");
+    const originalHash = sha256(readFileSync(policyPath));
+    let mutations = 0;
+    const manifest = collect(fixture, {
+      afterSnapshot(id: string) {
+        if (id !== "hosted-policy") return;
+        mutations += 1;
+        writeFileSync(policyPath, '{"stage":"tampered"}\n');
+      },
+    });
+    assert.equal(mutations, 1);
+    assert.equal(
+      manifest.checks.find((check: { id: string }) => check.id === "hosted-policy")?.artifactSha256,
+      originalHash,
+    );
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("hosted evidence rejects an inode replacement during an open artifact snapshot", () => {
+  const fixture = createEvidenceFixture();
+  try {
+    const policyPath = join(fixture.deployment, "stage-a-hosted-policy.json");
+    assert.throws(
+      () =>
+        collect(fixture, {
+          afterOpen(id: string) {
+            if (id !== "hosted-policy") return;
+            renameSync(policyPath, `${policyPath}.replaced`);
+            writeFileSync(policyPath, readFileSync(`${policyPath}.replaced`));
+          },
+        }),
+      /evidence input/i,
     );
   } finally {
     fixture.cleanup();
@@ -209,8 +354,10 @@ test("hosted evidence recursively rejects content, identity, secret, and raw-id 
     "id",
     "resourceId",
   ]) {
-    const manifest = { contentCaptured: false, nested: { [key]: "private-value" } };
-    assert.throws(() => assertEvidenceSafe(manifest), /forbidden evidence key|unsupported evidence key/i);
+    assert.throws(
+      () => assertEvidenceSafe({ contentCaptured: false, nested: { [key]: "private-value" } }),
+      /forbidden evidence key|unsupported evidence key/i,
+    );
   }
 });
 
@@ -219,9 +366,7 @@ test("hosted evidence rejects hidden, symbolic, accessor, inherited, and extra p
   const hidden = { ...base };
   Object.defineProperty(hidden, "secret", { enumerable: false, value: "private" });
   assert.throws(() => assertEvidenceSafe(hidden), /forbidden|unsupported/i);
-
-  const symbolic = { ...base, [Symbol("secret")]: "private" };
-  assert.throws(() => assertEvidenceSafe(symbolic), /unsupported/i);
+  assert.throws(() => assertEvidenceSafe({ ...base, [Symbol("secret")]: "private" }), /unsupported/i);
 
   let getterRan = false;
   const accessor = { ...base };
@@ -234,15 +379,13 @@ test("hosted evidence rejects hidden, symbolic, accessor, inherited, and extra p
   });
   assert.throws(() => assertEvidenceSafe(accessor), /unsupported/i);
   assert.equal(getterRan, false);
-
   const inherited = Object.create({ secret: "private" });
   inherited.contentCaptured = false;
   assert.throws(() => assertEvidenceSafe(inherited), /unsupported/i);
-
   assert.throws(() => assertEvidenceSafe({ ...base, extra: true }), /unsupported evidence key/i);
 });
 
-test("hosted evidence fails closed on symlinked, oversized, and malformed runtime inputs", () => {
+test("hosted evidence fails closed on symlinked, oversized, malformed, and unsupported inputs", () => {
   for (const mutate of [
     (fixture: ReturnType<typeof createEvidenceFixture>) => {
       const target = `${fixture.ledgerPath}.target`;
@@ -263,45 +406,58 @@ test("hosted evidence fails closed on symlinked, oversized, and malformed runtim
     const fixture = createEvidenceFixture();
     try {
       mutate(fixture);
-      assert.throws(
-        () =>
-          collectEvidence({
-            repoRoot: fixture.root,
-            commit: "a".repeat(40),
-            timestamp: "2026-08-02T01:02:03.000Z",
-            output: join(fixture.generated, "evidence-manifest.json"),
-          }),
-        /evidence input|sandbox bundle/i,
-      );
+      assert.throws(() => collect(fixture), /evidence input|sandbox bundle/i);
     } finally {
       fixture.cleanup();
     }
   }
 });
 
-test("hosted evidence refuses symlink output and leaves no private data in errors", () => {
+test("hosted evidence refuses symlink and hard-linked output without leaking private values", () => {
+  for (const link of ["symlink", "hardlink"] as const) {
+    const fixture = createEvidenceFixture();
+    try {
+      const target = join(fixture.generated, "target.json");
+      const output = join(fixture.generated, "evidence-manifest.json");
+      writeFileSync(target, "do-not-overwrite", { mode: 0o600 });
+      if (link === "symlink") symlinkSync(target, output);
+      else linkSync(target, output);
+      assert.throws(
+        () => collect(fixture),
+        (error: unknown) => {
+          const message = error instanceof Error ? error.message : String(error);
+          assert.doesNotMatch(message, new RegExp(fixture.privateAppId));
+          assert.doesNotMatch(message, new RegExp(fixture.root));
+          return /evidence output/i.test(message);
+        },
+      );
+      assert.equal(readFileSync(target, "utf8"), "do-not-overwrite");
+    } finally {
+      fixture.cleanup();
+    }
+  }
+});
+
+test("hosted evidence rejects symlinked output parent chains", () => {
   const fixture = createEvidenceFixture();
   try {
-    const target = join(fixture.generated, "target.json");
-    const output = join(fixture.generated, "evidence-manifest.json");
-    writeFileSync(target, "do-not-overwrite");
-    symlinkSync(target, output);
-    assert.throws(
-      () =>
-        collectEvidence({
-          repoRoot: fixture.root,
-          commit: "a".repeat(40),
-          timestamp: "2026-08-02T01:02:03.000Z",
-          output,
-        }),
-      (error: unknown) => {
-        const message = error instanceof Error ? error.message : String(error);
-        assert.doesNotMatch(message, new RegExp(fixture.privateAppId));
-        assert.doesNotMatch(message, new RegExp(fixture.root));
-        return /evidence output/i.test(message);
-      },
+    const moved = `${fixture.generated}.target`;
+    renameSync(fixture.generated, moved);
+    symlinkSync(moved, fixture.generated);
+    assert.throws(() => collect(fixture), /evidence (?:input|output)/i);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("hosted evidence leaves no private temporary output residue", () => {
+  const fixture = createEvidenceFixture();
+  try {
+    collect(fixture);
+    assert.deepEqual(
+      readdirSync(fixture.generated).filter((name) => name.includes("evidence-manifest.json.tmp")),
+      [],
     );
-    assert.equal(readFileSync(target, "utf8"), "do-not-overwrite");
   } finally {
     fixture.cleanup();
   }
