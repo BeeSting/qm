@@ -1,0 +1,18 @@
+{
+  "schemaVersion": "alpha-packet.synthetic.v1",
+  "synthetic": true,
+  "advisoryOnly": true,
+  "packetType": "SignalTracePacket",
+  "generatedAt": "2026-08-01T00:00:00.000Z",
+  "dataCutoff": "2026-07-31T20:00:00.000Z",
+  "scope": { "ticker": "SYNTH" },
+  "freshness": { "status": "synthetic" },
+  "gaps": ["No live price, volume, fundamental, news, or alternative-data signal is available."],
+  "sourceTrace": ["synthetic-fixture:signal-trace-v1"],
+  "disallowedUses": ["trade-execution", "client-advice", "canonical-record"],
+  "payload": {
+    "signal": "fictional-watch",
+    "evidence": ["Synthetic fixture only"],
+    "inference": "No investable conclusion can be drawn."
+  }
+}

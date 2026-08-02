@@ -1,0 +1,19 @@
+{
+  "schemaVersion": "alpha-packet.synthetic.v1",
+  "synthetic": true,
+  "advisoryOnly": true,
+  "packetType": "ThesisPacket",
+  "generatedAt": "2026-08-01T00:00:00.000Z",
+  "dataCutoff": "2026-07-31T20:00:00.000Z",
+  "scope": { "ticker": "SYNTH" },
+  "freshness": { "status": "synthetic" },
+  "gaps": ["No live market, filing, position, or transaction data is available."],
+  "sourceTrace": ["synthetic-fixture:thesis-v1"],
+  "disallowedUses": ["trade-execution", "client-advice", "canonical-record"],
+  "payload": {
+    "company": "Synthetic Compute Systems",
+    "thesis": "A fictional supplier may benefit from a fictional capacity cycle.",
+    "challenge": "The synthetic demand assumption may not persist.",
+    "confidence": "unscored"
+  }
+}

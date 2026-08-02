@@ -1,0 +1,13 @@
+{
+  "id": "alpha-packet",
+  "label": "Synthetic Alpha Packet Reader",
+  "advertise": "alpha-packet",
+  "egress": [],
+  "install": { "binary": "alpha-packet" },
+  "approvals": [
+    { "command": "refresh", "decision": "deny", "reason": "Stage A is fixture-only" },
+    { "command": "write", "decision": "deny", "reason": "Stage A is read-only" },
+    { "command": "sql", "decision": "deny", "reason": "Database access is prohibited" },
+    { "command": "fetch", "decision": "deny", "reason": "Network access is prohibited" }
+  ]
+}
