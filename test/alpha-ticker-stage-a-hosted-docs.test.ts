@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
@@ -28,6 +30,24 @@ function section(text: string, start: string, end: string): string {
   assert.ok(startIndex >= 0, `missing section start: ${start}`);
   assert.ok(endIndex > startIndex, `missing section end: ${end}`);
   return text.slice(startIndex, endIndex);
+}
+
+function fencedBlocks(text: string, language: string): string[] {
+  const blocks: string[] = [];
+  const pattern = new RegExp("```" + language + "\\n([\\s\\S]*?)\\n```", "g");
+  for (const match of text.matchAll(pattern)) {
+    if (match[1] !== undefined) blocks.push(match[1]);
+  }
+  return blocks;
+}
+
+function embeddedNodeBodies(text: string): string[] {
+  const bodies: string[] = [];
+  const pattern = /node --input-type=module <<'NODE'[^\n]*\n([\s\S]*?)\nNODE/g;
+  for (const match of text.matchAll(pattern)) {
+    if (match[1] !== undefined) bodies.push(match[1]);
+  }
+  return bodies;
 }
 
 test("hosted runbook defines the complete H0-H5 operating boundary", () => {
@@ -175,7 +195,10 @@ test("H0 and H1 protect identity inputs and capture progressive private inventor
       "ADMIN_GRANTS",
       "AUTH_ALLOWED_EMAILS",
       "directly in the private `.env` before setup",
-      '"$QM_BIN" setup </dev/null >/dev/null 2>&1',
+      'if ! "$QM_BIN" setup >/dev/null 2>&1; then',
+      "stdin remains attached to the terminal",
+      "no prompts or identity derivation are expected",
+      "qm-setup-validation-failed",
       "validation-only",
       "must not derive one identity list from the other",
       "Identity output may never be retained",
@@ -193,12 +216,152 @@ test("H0 and H1 protect identity inputs and capture progressive private inventor
       "immediately after each successful create and before the next cloud mutation",
       "mode `0600`",
       "ignored",
+      '"h2ResourceReconciliation": "not-started"',
       "teardown",
     ],
     "H1 progressive inventory",
   );
 
-  assert.equal(runbook.match(/^"\$QM_BIN" setup(?: <\/dev\/null >\/dev\/null 2>&1)?$/gm)?.length ?? 0, 2);
+  assert.doesNotMatch(h0, /"\$QM_BIN" setup <\/dev\/null/);
+  assert.equal(runbook.match(/^(?:if ! )?"\$QM_BIN" setup(?: >\/dev\/null 2>&1; then)?$/gm)?.length ?? 0, 2);
+});
+
+test("H2 reconciles exact private Fly identities after every qm up outcome", () => {
+  const runbook = readDocument("runbook.md");
+  const h2 = section(runbook, "### Gate H2", "### Gate H3");
+
+  requireAll(
+    h2,
+    [
+      "reconcile_hosted_apps()",
+      'FLY_APPS_SNAPSHOT="$(mktemp',
+      'chmod 600 "$FLY_APPS_SNAPSHOT"',
+      'fly apps list --org personal --json >"$FLY_APPS_SNAPSHOT" 2>/dev/null',
+      "JSON.parse",
+      'entry.Organization !== "personal"',
+      'typeof entry.ID !== "string"',
+      'typeof entry.Name !== "string"',
+      "duplicate Fly app identity refused",
+      "unknown approved-name collision refused",
+      "immutable Fly app ID mismatch refused",
+      '"h2ResourceReconciliation"',
+      'H2_ALLOWED_STATES="not-started,complete"',
+      'H2_NEXT_STATE="unresolved"',
+      'H2_NEXT_STATE="complete"',
+      "mark_h2_resources_unresolved",
+      'H2_DATA_RECONCILIATION="$RECONCILE_ROOT/h2-data-reconciliation.private.json"',
+      "prepare_h2_data_reconciliation_input",
+      "complete_h2_resource_reconciliation",
+      "renameSync(temporary, inventoryPath)",
+      "chmodSync(inventoryPath, 0o600)",
+      'git -C "$REPO_ROOT" check-ignore --quiet .generated/alpha-ticker-stage-a-hosted/resource-inventory.json',
+      'UP_STATUS=0\n"$QM_BIN" up || UP_STATUS=$?\nreconcile_hosted_apps',
+      "qm-up-failed-after-inventory-reconciliation",
+      "leave `h2ResourceReconciliation` as `unresolved`",
+      "Managed Postgres",
+      "Tigris",
+      "before controlled teardown",
+      "exact immutable identifier",
+      '"$MPG_SNAPSHOT" "$TIGRIS_SNAPSHOT" "$H2_DATA_RECONCILIATION"',
+    ],
+    "H2 app reconciliation",
+  );
+
+  for (const app of [
+    "alpha-ticker-stage-a-hosted-core",
+    "alpha-ticker-stage-a-hosted-web-ui",
+    "alpha-ticker-stage-a-hosted-admin",
+    "alpha-ticker-stage-a-hosted-portal",
+    "alpha-ticker-stage-a-hosted-auth",
+    "alpha-ticker-stage-a-hosted-sandboxes",
+    "alpha-ticker-stage-a-egress",
+  ]) {
+    assert.ok(h2.includes(`"${app}"`), `H2 reconciliation must pin ${app}`);
+  }
+
+  assert.equal(h2.match(/^"\$QM_BIN" up \|\| UP_STATUS=\$\?$/gm)?.length ?? 0, 2);
+  assert.equal(h2.match(/^reconcile_hosted_apps$/gm)?.length ?? 0, 2);
+  assert.equal(h2.match(/^mark_h2_resources_unresolved$/gm)?.length ?? 0, 2);
+  assert.equal(h2.match(/^complete_h2_resource_reconciliation$/gm)?.length ?? 0, 2);
+  assert.equal(h2.match(/^prepare_h2_data_reconciliation_input$/gm)?.length ?? 0, 2);
+  assert.equal(h2.match(/^ {2}"\$MPG_SNAPSHOT" "\$TIGRIS_SNAPSHOT" "\$H2_DATA_RECONCILIATION"$/gm)?.length ?? 0, 2);
+  assert.doesNotMatch(
+    h2,
+    /"\$MPG_SNAPSHOT" "\$TIGRIS_SNAPSHOT" "\$INVENTORY_PATH"/,
+    "operator must not edit the lifecycle-bearing inventory directly",
+  );
+  const firstMark = h2.indexOf("mark_h2_resources_unresolved\n");
+  const firstUp = h2.indexOf('"$QM_BIN" up || UP_STATUS=$?');
+  const firstReconcile = h2.indexOf("reconcile_hosted_apps\n");
+  const firstComplete = h2.indexOf("complete_h2_resource_reconciliation\n");
+  assert.ok(firstMark >= 0 && firstMark < firstUp && firstUp < firstReconcile && firstReconcile < firstComplete);
+  assert.doesNotMatch(h2, /fly apps list --org personal --json(?! >"\$FLY_APPS_SNAPSHOT" 2>\/dev\/null)/);
+});
+
+test("embedded H2 reconciler atomically preserves IDs and rejects an unknown-name ID collision", () => {
+  const runbook = readDocument("runbook.md");
+  const h2 = section(runbook, "### Gate H2", "### Gate H3");
+  const [reconciler] = embeddedNodeBodies(h2);
+  assert.ok(reconciler, "H2 must contain its embedded reconciler");
+
+  const root = mkdtempSync(join(tmpdir(), "hosted-doc-reconcile-"));
+  const snapshotPath = join(root, "fly-apps.json");
+  const inventoryPath = join(root, "resource-inventory.json");
+  const writePrivateJson = (path: string, value: unknown): void => {
+    writeFileSync(path, `${JSON.stringify(value)}\n`, { mode: 0o600 });
+    chmodSync(path, 0o600);
+  };
+  try {
+    writePrivateJson(inventoryPath, {
+      flyOrg: "personal",
+      apps: [{ name: "alpha-ticker-stage-a-egress", id: "fixture-egress-id" }],
+      managedPostgres: null,
+      objectStorage: null,
+      sandboxRegistry: null,
+      h2ResourceReconciliation: "unresolved",
+    });
+    writePrivateJson(snapshotPath, [
+      {
+        ID: "fixture-egress-id",
+        Name: "alpha-ticker-stage-a-egress",
+        Organization: "personal",
+      },
+      {
+        ID: "fixture-core-id",
+        Name: "alpha-ticker-stage-a-hosted-core",
+        Organization: "personal",
+      },
+      { ID: "fixture-unrelated-id", Name: "unrelated-personal-app", Organization: "personal" },
+    ]);
+    const success = spawnSync(process.execPath, ["--input-type=module"], {
+      encoding: "utf8",
+      env: { ...process.env, FLY_APPS_SNAPSHOT: snapshotPath, INVENTORY_PATH: inventoryPath },
+      input: reconciler,
+    });
+    assert.equal(success.status, 0, success.stderr);
+    assert.equal(success.stdout, "");
+    assert.equal(statSync(inventoryPath).mode & 0o777, 0o600);
+    const merged = JSON.parse(readFileSync(inventoryPath, "utf8"));
+    assert.deepEqual(merged.apps, [
+      { name: "alpha-ticker-stage-a-hosted-core", id: "fixture-core-id" },
+      { name: "alpha-ticker-stage-a-egress", id: "fixture-egress-id" },
+    ]);
+
+    const beforeCollision = readFileSync(inventoryPath, "utf8");
+    writePrivateJson(snapshotPath, [
+      { ID: "fixture-core-id", Name: "unrelated-personal-app", Organization: "personal" },
+    ]);
+    const collision = spawnSync(process.execPath, ["--input-type=module"], {
+      encoding: "utf8",
+      env: { ...process.env, FLY_APPS_SNAPSHOT: snapshotPath, INVENTORY_PATH: inventoryPath },
+      input: reconciler,
+    });
+    assert.notEqual(collision.status, 0);
+    assert.match(collision.stderr, /unknown approved-name collision refused/);
+    assert.equal(readFileSync(inventoryPath, "utf8"), beforeCollision);
+  } finally {
+    rmSync(root, { force: true, recursive: true });
+  }
 });
 
 test("H3 uses a reversible qconfig drill and manual in-place provider-key replacement", () => {
@@ -219,7 +382,9 @@ test("H3 uses a reversible qconfig drill and manual in-place provider-key replac
       '"ORG_BUDGET_USD_PER_WINDOW": "0"',
       "replacementCount !== 1",
       "Pre-mutation boundary and policy checks",
-      "The next synthetic turn must be denied before any provider request",
+      "Run exactly one synthetic denial probe",
+      "No further turn is permitted",
+      "original 45 configuration is restored and redeployed",
       'cmp -s "$BUDGET_BACKUP" "$QCONFIG"',
       "restore the exact original bytes",
       '"$QM_BIN" up --only core',
@@ -239,8 +404,8 @@ test("H3 uses a reversible qconfig drill and manual in-place provider-key replac
 
   assert.doesNotMatch(h3, /^"\$QM_BIN" setup(?:\s|$)/m);
   assert.ok(h3.indexOf("Pre-mutation boundary and policy checks") < h3.indexOf("replacementCount !== 1"));
-  assert.ok(h3.indexOf("replacementCount !== 1") < h3.indexOf("denied before any provider request"));
-  assert.ok(h3.indexOf("denied before any provider request") < h3.indexOf("restore the exact original bytes"));
+  assert.ok(h3.indexOf("replacementCount !== 1") < h3.indexOf("Run exactly one synthetic denial probe"));
+  assert.ok(h3.indexOf("Run exactly one synthetic denial probe") < h3.indexOf("restore the exact original bytes"));
   assert.ok(h3.indexOf("restore the exact original bytes") < h3.lastIndexOf('"$QM_BIN" up --only core'));
 });
 
@@ -264,6 +429,13 @@ test("H5 initializes deletion evidence and documents early-stop and cryptographi
       "UTC deletion timestamps",
       "cryptographically verifies the exact lockfile-pinned QM package tree",
       "hardened process-group timeouts",
+      "partial H1/H2 inventory skips `qm down`",
+      "directly destroys only the captured apps",
+      "exact immutable ID and `personal` organization verification",
+      "complete five-app QM-managed inventory",
+      "verified `qm down` first",
+      "An `unresolved` H2 resource lifecycle refuses final teardown success",
+      "h2-resource-reconciliation-required",
     ],
     "H5 teardown evidence",
   );
@@ -279,14 +451,49 @@ test("H5 initializes deletion evidence and documents early-stop and cryptographi
       "only when the H2/H3 register is non-passing",
       "both deletion booleans begin `false`",
       "change to `true` only after",
+      "`h2ResourceReconciliation`",
+      "`not-started`",
+      "`unresolved`",
+      "`complete`",
     ],
     "early-stop evidence",
   );
   requireAll(
     limitations,
-    ["Early-stop evidence limitation", "non-passing decision evidence", "Cryptographic QM verification", "timeouts"],
+    [
+      "Early-stop evidence limitation",
+      "non-passing decision evidence",
+      "Cryptographic QM verification",
+      "timeouts",
+      "H2 resource-reconciliation limitation",
+      "unresolved",
+      "refuses final teardown success",
+    ],
     "limitations",
   );
+});
+
+test("runbook command fences and embedded Node programs are syntactically valid", () => {
+  const runbook = readDocument("runbook.md");
+  const fenceCount = runbook.match(/^```/gm)?.length ?? 0;
+  assert.equal(fenceCount % 2, 0, "markdown code fences must be balanced");
+
+  const bashBlocks = fencedBlocks(runbook, "bash");
+  assert.ok(bashBlocks.length > 0, "runbook must contain Bash command blocks");
+  for (const [index, body] of bashBlocks.entries()) {
+    const result = spawnSync("bash", ["-n"], { encoding: "utf8", input: body });
+    assert.equal(result.status, 0, `bash fence ${index + 1} must parse: ${result.stderr}`);
+  }
+
+  const nodeBodies = embeddedNodeBodies(runbook);
+  assert.ok(nodeBodies.length > 0, "runbook must contain embedded Node programs");
+  for (const [index, body] of nodeBodies.entries()) {
+    const result = spawnSync(process.execPath, ["--input-type=module", "--check"], {
+      encoding: "utf8",
+      input: body,
+    });
+    assert.equal(result.status, 0, `embedded Node program ${index + 1} must parse: ${result.stderr}`);
+  }
 });
 
 test("hosted evidence index is aggregate-only and names every controlled artifact", () => {
@@ -379,6 +586,7 @@ test("hosted operating documents exclude identities, secrets, captured content, 
     /(?:fly apps destroy --all|docker (?:system|volume|network) prune|rm -rf|--auto-approve)/i,
   );
   assert.doesNotMatch(corpus, /\bnpm\s+exec\b|\bnpx\b/i);
+  assert.doesNotMatch(corpus, /"\$QM_BIN" setup <\/dev\/null/);
   assert.doesNotMatch(
     corpus,
     /^\s*(?:\$\s*)?qm\s+(?:check|plan|sandbox|setup|secrets|up|doctor|conformance|status|down)\b/im,
