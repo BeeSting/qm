@@ -864,7 +864,7 @@ APPS=(
 )
 ```
 
-`--dry-run` prints only these names and the two separately managed data resources `alpha-ticker-stage-a-hosted-pg` and `alpha-ticker-stage-a-hosted-data`. Execution runs `npm exec qm -- down`, verifies Fly organization ownership for each existing app, and calls `fly apps destroy "$app" --yes` one at a time. Managed Postgres and Tigris deletion remain explicit Fly-dashboard operations using the exact ids captured in the ignored, mode-`0600` resource inventory; the script must stop with `manual-data-destruction-required` until the operator records both as deleted in the minimized teardown evidence.
+`--dry-run` prints only these names and the two separately managed data resources `alpha-ticker-stage-a-hosted-pg` and `alpha-ticker-stage-a-hosted-data`. Execution runs `down` through the verified, non-symlinked repository-local QM binary, without npm download fallback, verifies Fly organization ownership for each existing app, and calls `fly apps destroy "$app" --yes` one at a time. Managed Postgres and Tigris deletion remain explicit Fly-dashboard operations using the exact ids captured in the ignored, mode-`0600` resource inventory; the script must stop with `manual-data-destruction-required` until the operator records both as deleted in the minimized teardown evidence.
 
 - [ ] **Step 6: Run tests**
 
