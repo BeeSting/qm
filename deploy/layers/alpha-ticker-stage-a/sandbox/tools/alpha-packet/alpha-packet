@@ -1,0 +1,52 @@
+#!/usr/bin/env node
+
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const root = dirname(fileURLToPath(import.meta.url));
+const fixtureRoot = join(root, "fixtures");
+
+function deny() {
+  process.stderr.write("alpha-packet: request denied\n");
+  process.exitCode = 1;
+}
+
+function requestKey(args) {
+  if (args.length !== 3) return undefined;
+
+  const [rawCommand, rawFlag, rawValue] = args;
+  const command = rawCommand?.trim().toLowerCase();
+  const flag = rawFlag?.trim().toLowerCase();
+  const value = rawValue?.trim().toUpperCase();
+
+  if ((command === "thesis" || command === "signal-trace") && flag === "--ticker" && value === "SYNTH") {
+    return `${command}:${value}`;
+  }
+  if (
+    (command === "portfolio-health" || command === "alerts") &&
+    flag === "--portfolio" &&
+    value === "SYNTHETIC_NUCLEUS"
+  ) {
+    return `${command}:${value}`;
+  }
+  return undefined;
+}
+
+try {
+  const key = requestKey(process.argv.slice(2));
+  if (!key) {
+    deny();
+  } else {
+    const index = JSON.parse(readFileSync(join(fixtureRoot, "index.json"), "utf8"));
+    const fixtureName = index[key];
+    if (typeof fixtureName !== "string" || !/^[a-z0-9-]+\.json$/.test(fixtureName)) {
+      deny();
+    } else {
+      const packet = JSON.parse(readFileSync(join(fixtureRoot, fixtureName), "utf8"));
+      process.stdout.write(`${JSON.stringify(packet)}\n`);
+    }
+  }
+} catch {
+  deny();
+}

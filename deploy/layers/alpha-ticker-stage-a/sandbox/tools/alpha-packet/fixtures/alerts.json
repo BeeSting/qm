@@ -1,0 +1,18 @@
+{
+  "schemaVersion": "alpha-packet.synthetic.v1",
+  "synthetic": true,
+  "advisoryOnly": true,
+  "packetType": "AlertDigestPacket",
+  "generatedAt": "2026-08-01T00:00:00.000Z",
+  "dataCutoff": "2026-07-31T20:00:00.000Z",
+  "scope": { "portfolio": "SYNTHETIC_NUCLEUS" },
+  "freshness": { "status": "synthetic" },
+  "gaps": ["No live alerts or market conditions are available."],
+  "sourceTrace": ["synthetic-fixture:alerts-v1"],
+  "disallowedUses": ["trade-execution", "client-advice", "canonical-record"],
+  "payload": {
+    "severity": "illustrative",
+    "alerts": ["Synthetic concentration review required."],
+    "requiredReview": "No alert may be promoted without human validation."
+  }
+}

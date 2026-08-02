@@ -1,0 +1,6 @@
+{
+  "thesis:SYNTH": "thesis.json",
+  "portfolio-health:SYNTHETIC_NUCLEUS": "portfolio-health.json",
+  "alerts:SYNTHETIC_NUCLEUS": "alerts.json",
+  "signal-trace:SYNTH": "signal-trace.json"
+}

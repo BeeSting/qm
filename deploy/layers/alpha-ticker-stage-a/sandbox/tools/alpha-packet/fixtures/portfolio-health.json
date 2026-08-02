@@ -1,0 +1,19 @@
+{
+  "schemaVersion": "alpha-packet.synthetic.v1",
+  "synthetic": true,
+  "advisoryOnly": true,
+  "packetType": "PortfolioHealthPacket",
+  "generatedAt": "2026-08-01T00:00:00.000Z",
+  "dataCutoff": "2026-07-31T20:00:00.000Z",
+  "scope": { "portfolio": "SYNTHETIC_NUCLEUS" },
+  "freshness": { "status": "synthetic" },
+  "gaps": ["No live holdings, NAV, benchmark, beta, or cash data is available."],
+  "sourceTrace": ["synthetic-fixture:portfolio-health-v1"],
+  "disallowedUses": ["trade-execution", "client-advice", "canonical-record"],
+  "payload": {
+    "health": "illustrative-only",
+    "concentration": "fictional-moderate",
+    "cash": "fictional-available",
+    "requiredReview": "Human reviewer must replace every fictional value before use."
+  }
+}
