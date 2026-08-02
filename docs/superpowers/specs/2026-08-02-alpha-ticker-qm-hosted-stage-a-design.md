@@ -1,6 +1,6 @@
 # Alpha Ticker QM Hosted Stage A Design
 
-**Status:** Proposed for sponsor review
+**Status:** Approved by sponsor on 2026-08-02
 
 **Date:** 2026-08-02
 
@@ -21,9 +21,13 @@ The hosted pilot is a new deployment, not an in-place conversion of the local Do
 - Public services: `portal`, `web-ui`, and the authentication callback only.
 - Private services: `core`, `admin`, Managed Postgres, Tigris object storage, and per-scope sandbox Machines.
 - Sandbox image: built from the pinned QM base, published once, and recorded by immutable digest.
-- Region: choose the nearest Fly region available to the Alpha Ticker Fly organization during preflight. Stop rather than silently deploying to an unapproved region.
+- Region: Fly `jnb` (Johannesburg). Preflight must confirm current regional availability and stop rather than silently selecting a fallback.
+- Egress enforcement: a dedicated public QM egress-proxy app with tokenless access denied. Every Sprite is restricted to that proxy, and the proxy authorizes only the hosts embedded in the signed per-turn capability. The Stage A organization policy contains one allowed control-plane host, `alpha-ticker-stage-a-hosted-portal.fly.dev`, and zero allowed external-data hosts. This non-empty control-plane allowlist is required because the pinned QM release treats an empty `allowedHosts` array as unrestricted rather than deny-all.
+- Security posture: `strict`, so every executable tool call also requires explicit human approval.
 
 Fly is a specialist execution layer for QM. It does not replace or modify Vercel, Railway, Supabase, or any Ticker Alpha production deployment.
+
+The forced proxy is the network boundary for Sprite sandboxes only. The QM core still needs outbound access to the dedicated OpenAI project, SMTP relay, Fly control plane, Managed Postgres, and Tigris. Stage A limits that core path through dedicated credentials and absent connector credentials, but does not claim a network-level core egress allowlist.
 
 ### 2.2 Model Route
 
@@ -37,7 +41,7 @@ The dedicated API key is write-only, never committed, never printed, and removab
 
 ### 2.3 Identity
 
-- Sign-in: QM's built-in email broker over an existing Alpha Ticker SMTP transport.
+- Sign-in: QM's built-in email broker over the existing Alpha Ticker SMTP relay, using a dedicated pilot-scoped sender credential grant rather than any production application credential.
 - Admission: exactly three sponsor-approved work-email addresses.
 - Administrator: one of those addresses receives `org_admin`; the other two remain ordinary principals.
 - Slack sign-in, Slack bot access, anonymous playground access, public links, and general-domain admission are disabled.
@@ -60,7 +64,7 @@ Controls operate in layers:
 
 1. **Per-person brake:** Each principal is denied new turns after recording US$20 in the evaluation window.
 2. **QM organization brake:** New turns are denied after recorded organization spend reaches US$45.
-3. **Provider buffer:** The dedicated provider project may expose no more than US$50 of authorized spend. The US$5 difference absorbs a final in-flight request because QM checks recorded spend before the next turn rather than reserving the estimated cost of the current turn.
+3. **Provider buffer:** The dedicated provider project may expose no more than US$50 of authorized spend. A dashboard budget or notification is not a hard cap. Activation requires prepaid credit with auto-recharge disabled, an externally capped payment method, or another control proven to deny further spend at US$50. The US$5 difference absorbs a final in-flight request because QM checks recorded spend before the next turn rather than reserving the estimated cost of the current turn.
 4. **Operational thresholds:** At US$33.75 recorded spend, notify the sponsor. At US$40.50, pause non-essential runs and complete only the acceptance matrix. At US$45, no additional model turns are permitted.
 5. **No auto-recharge:** Any provider mechanism that could raise the available balance or budget automatically must be disabled. If the provider cannot establish a reliable US$50 maximum exposure, activation remains a no-go.
 
@@ -86,6 +90,8 @@ Fly.io compute, Managed Postgres, object storage, and sandbox costs are tracked 
 - Any integration with Vercel, Railway, or Supabase.
 
 The hosted boundary scanner must reject a deployment that contains a production hostname, restricted environment name, secret-shaped value, unsupported tool, or non-synthetic fixture.
+
+The deployment must also refuse activation if `SPRITES_EGRESS_PROXY_URL` is absent, the proxy permits tokenless traffic, the durable organization egress allowlist is empty or differs from the one approved control-plane host, or an agent turn can reach an unapproved public host. Command approval remains defense in depth and is not treated as the network boundary.
 
 ## 5. Evaluation Protocol
 
@@ -132,19 +138,21 @@ Failure of any security or isolation threshold is an immediate no-go. Quality or
 
 ## 6. Rollout Gates
 
-### Gate H0: Preflight, no mutation
+### Gate H0: Preflight and provider-control setup
 
 - Verify Fly organization access and billing ownership.
-- Verify app-name and region availability.
+- Verify app, Managed Postgres, and Tigris resource-name availability and that Fly currently offers `jnb`.
 - Confirm SMTP transport and the three allowlisted addresses without committing them.
 - Create or identify the dedicated OpenAI project and prove that auto-recharge is disabled.
 - Confirm the provider can enforce the US$50 maximum exposure.
 - Run source pin, dependency pin, typecheck, lint, full tests, Stage A tests, boundary scan, `qm check`, sandbox dry-run, and `qm plan` against the proposed hosted directory.
 
-Any failed item stops before cloud mutation.
+H0 may create the dedicated provider project and its bounded SMTP grant, but it creates no Fly resource, uploads no deployment secret, and makes no billable model call. Any failed item stops before Fly mutation or model use.
 
 ### Gate H1: Immutable sandbox publication
 
+- Deploy the dedicated egress proxy with tokenless access set to `deny` and the same capability-signing secret used by the QM core.
+- Prove an unsigned request and a signed request for an unapproved host are both denied.
 - Create the dedicated Fly sandbox registry app.
 - Publish the Stage A sandbox image once.
 - Record and verify its immutable digest.
@@ -157,7 +165,9 @@ No agent deployment is started at this gate.
 - Push write-only secrets.
 - Deploy the minimum service set.
 - Verify TLS, authentication allowlisting, admin separation, database durability, object-storage round trip, sandbox identity metadata, and idempotent redeployment.
-- Verify that no connector, Slack bot, browser, public link, or production endpoint is available.
+- Verify that no connector provider is configured, connector start attempts fail closed, and no Slack bot, browser, public link, or production endpoint is available.
+- Before the first participant turn, set and read back the durable organization egress policy to the one approved control-plane host.
+- Verify that Sprite network policy permits only the egress proxy and that the proxy denies an unapproved external host.
 
 ### Gate H3: Safety drills
 
@@ -215,10 +225,11 @@ The hosted Stage A work produces:
 
 1. A separate Fly deployment directory with pinned configuration.
 2. Tests for the hosted policy, spend values, service list, provider route, and prohibited capabilities.
-3. A hosted operations runbook covering deployment, monitoring, incident response, revocation, and teardown.
-4. A minimized evidence schema and scoring ledger.
-5. Live conformance, identity-isolation, budget, revocation, durability, and teardown evidence.
-6. A sponsor decision memo that does not overstate security or production readiness.
+3. A token-validated, default-deny egress-proxy configuration and its negative tests.
+4. A hosted operations runbook covering deployment, monitoring, incident response, revocation, and teardown.
+5. A minimized evidence schema and scoring ledger.
+6. Live conformance, identity-isolation, egress, budget, revocation, durability, and teardown evidence.
+7. A sponsor decision memo that does not overstate security or production readiness.
 
 ## 10. Non-Goals
 
@@ -231,4 +242,3 @@ The hosted Stage A work produces:
 - Model routing across multiple providers.
 - Railway or Vercel migration.
 - Automated actions, trades, deployments, or external messages.
-
