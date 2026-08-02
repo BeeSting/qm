@@ -368,7 +368,7 @@ test("hosted teardown does not touch absent or near-name apps", () => {
   }
 });
 
-test("hosted teardown destroys a progressively captured H1 egress and sandbox subset", () => {
+test("hosted teardown destroys a progressively captured H1 egress and sandbox subset without qm down", () => {
   const capturedApps = ["alpha-ticker-stage-a-hosted-sandboxes", "alpha-ticker-stage-a-egress"];
   const flyJson = JSON.stringify(
     capturedApps.map((name) => ({
@@ -382,11 +382,43 @@ test("hosted teardown destroys a progressively captured H1 egress and sandbox su
     captureDataResources: false,
     omitTeardownEvidence: true,
     flyJson,
+    qmExit: 97,
   });
   try {
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.stdout, "teardown-complete\n");
     const calls = readCalls(result);
+    assert.doesNotMatch(calls, /qm:down/);
+    for (const app of capturedApps) assert.match(calls, new RegExp(`fly:apps destroy ${app} --yes`));
+    for (const app of apps.filter((name) => !capturedApps.includes(name))) {
+      assert.doesNotMatch(calls, new RegExp(`fly:apps destroy ${app} --yes`));
+    }
+  } finally {
+    result.cleanup();
+  }
+});
+
+test("hosted teardown destroys a partial QM-managed app subset without qm down", () => {
+  const capturedApps = ["alpha-ticker-stage-a-hosted-core", "alpha-ticker-stage-a-hosted-auth"];
+  const flyJson = JSON.stringify(
+    capturedApps.map((name) => ({
+      ID: `private-app-id-${apps.indexOf(name)}`,
+      Name: name,
+      Organization: "personal",
+    })),
+  );
+  const result = createTeardownScenario({
+    capturedApps,
+    captureDataResources: false,
+    omitTeardownEvidence: true,
+    flyJson,
+    qmExit: 97,
+  });
+  try {
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, "teardown-complete\n");
+    const calls = readCalls(result);
+    assert.doesNotMatch(calls, /qm:down/);
     for (const app of capturedApps) assert.match(calls, new RegExp(`fly:apps destroy ${app} --yes`));
     for (const app of apps.filter((name) => !capturedApps.includes(name))) {
       assert.doesNotMatch(calls, new RegExp(`fly:apps destroy ${app} --yes`));

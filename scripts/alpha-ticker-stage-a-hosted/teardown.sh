@@ -58,6 +58,13 @@ const apps = [
   "alpha-ticker-stage-a-hosted-sandboxes",
   "alpha-ticker-stage-a-egress",
 ];
+const qmManagedApps = [
+  "alpha-ticker-stage-a-hosted-core",
+  "alpha-ticker-stage-a-hosted-web-ui",
+  "alpha-ticker-stage-a-hosted-admin",
+  "alpha-ticker-stage-a-hosted-portal",
+  "alpha-ticker-stage-a-hosted-auth",
+];
 const inventoryPath = join(generated, "resource-inventory.json");
 const teardownEvidencePath = join(generated, "teardown-evidence.json");
 const maxInputBytes = 64 * 1024;
@@ -277,7 +284,8 @@ const deletionComplete = validateTeardownEvidence(inventory);
 const qmBin = verifyQmInstall();
 const initialApps = listFlyApps(appIds);
 if (initialApps.size > 0) {
-  run(qmBin, ["down"], "qm-down-failed");
+  const qmManagedSetEligible = qmManagedApps.every((app) => appIds.has(app) && initialApps.has(app));
+  if (qmManagedSetEligible) run(qmBin, ["down"], "qm-down-failed");
   for (const app of apps) {
     const current = listFlyApps(appIds);
     if (current.has(app)) run("fly", ["apps", "destroy", app, "--yes"], "fly-destroy-failed");
