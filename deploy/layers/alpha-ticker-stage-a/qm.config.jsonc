@@ -35,5 +35,5 @@
 
   // The Fly app agents execute in. The core boots the immutable sandbox image
   // recorded by `qm sandbox publish`.
-  "sandbox": { "app": "alpha-ticker-stage-a-sandboxes" }
+  "sandbox": { "app": "alpha-ticker-stage-a-sandboxes" },
 }

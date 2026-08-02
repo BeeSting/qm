@@ -81,11 +81,17 @@ test("three principals can read only their personal artifact and the shared room
   for (const principal of PRINCIPALS) {
     const personal = await app.listScopeResources(principal, scopeId("personal", principal));
     assert.ok(personal);
-    assert.deepEqual(personal.skills.map((skill) => skill.name), [`private-${principal.split(".")[0]}`]);
+    assert.deepEqual(
+      personal.skills.map((skill) => skill.name),
+      [`private-${principal.split(".")[0]}`],
+    );
 
     const shared = await app.listScopeResources(principal, ROOM);
     assert.ok(shared);
-    assert.deepEqual(shared.skills.map((skill) => skill.name), ["shared-pilot-room"]);
+    assert.deepEqual(
+      shared.skills.map((skill) => skill.name),
+      ["shared-pilot-room"],
+    );
 
     for (const other of PRINCIPALS) {
       if (other === principal) continue;

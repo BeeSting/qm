@@ -3,10 +3,7 @@ import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { test } from "node:test";
 
-import {
-  assertEvidenceSafe,
-  buildEvidenceManifest,
-} from "../scripts/alpha-ticker-stage-a/collect-evidence.mjs";
+import { assertEvidenceSafe, buildEvidenceManifest } from "../scripts/alpha-ticker-stage-a/collect-evidence.mjs";
 
 const teardown = "scripts/alpha-ticker-stage-a/teardown.sh";
 

@@ -7,14 +7,7 @@ import { dirname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const FORBIDDEN_KEYS = new Set(["prompt", "response", "packetBody", "providerRequest", "secret", "tokenValue"]);
-const ALLOWED_TOP_LEVEL_KEYS = new Set([
-  "commit",
-  "qmBaseline",
-  "timestamp",
-  "checks",
-  "counts",
-  "contentCaptured",
-]);
+const ALLOWED_TOP_LEVEL_KEYS = new Set(["commit", "qmBaseline", "timestamp", "checks", "counts", "contentCaptured"]);
 const DEFAULT_OUTPUT = ".generated/alpha-ticker-stage-a/evidence-manifest.json";
 
 function sha256(content) {
