@@ -109,6 +109,13 @@ function writeJson(path: string, value: unknown, mode = 0o600) {
   chmodSync(path, mode);
 }
 
+function writeScoreLedger(path: string, records: ReturnType<typeof scoreRecords>) {
+  writeFileSync(path, `${records.map((record) => JSON.stringify(record)).join("\n")}${records.length ? "\n" : ""}`, {
+    mode: 0o600,
+  });
+  chmodSync(path, 0o600);
+}
+
 function writeLiveChecks(
   generated: string,
   allTurnModelCostUsd = 4.5,
@@ -164,14 +171,7 @@ function createEvidenceFixture() {
     teardownScheduled: true,
   });
   const ledgerPath = join(generated, "scores.jsonl");
-  writeFileSync(
-    ledgerPath,
-    `${scoreRecords()
-      .map((record) => JSON.stringify(record))
-      .join("\n")}\n`,
-    { mode: 0o600 },
-  );
-  chmodSync(ledgerPath, 0o600);
+  writeScoreLedger(ledgerPath, scoreRecords());
 
   const privateAppId = "app-private-identifier-do-not-retain";
   const privateDatabaseId = "database-private-identifier-do-not-retain";
@@ -419,6 +419,86 @@ test("hosted evidence CLI returns nonzero after writing an auditable non-passing
     assert.equal(JSON.parse(readFileSync(join(fixture.generated, "evidence-manifest.json"), "utf8")).pass, false);
   } finally {
     fixture.cleanup();
+  }
+});
+
+test("hosted evidence writes early-stop manifests with a missing or partial score ledger", () => {
+  for (const sampleSize of [0, 7, 14]) {
+    const fixture = createEvidenceFixture();
+    try {
+      writeLiveChecks(
+        fixture.generated,
+        4.5,
+        1.25,
+        liveCheckIds.map((id, index) => ({ id, status: index === 0 ? "fail" : "not-run" })),
+      );
+      if (sampleSize === 0) rmSync(fixture.ledgerPath);
+      else writeScoreLedger(fixture.ledgerPath, scoreRecords().slice(0, sampleSize));
+
+      const manifest = collect(fixture);
+      assert.equal(manifest.pass, false);
+      assert.equal(manifest.counts.scoredOutputs, sampleSize);
+      assert.equal(manifest.scoreSummary.sampleSize, sampleSize);
+      assert.equal(manifest.scoreSummary.pass, false);
+      const ledgerCheck = manifest.checks.find((check: { id: string }) => check.id === "evaluation-ledger");
+      assert.equal(ledgerCheck?.status, "fail");
+      if (sampleSize === 0) {
+        assert.equal(ledgerCheck?.artifactSha256, null);
+        const forged = structuredClone(manifest);
+        forged.counts.scoredOutputs = 1;
+        forged.scoreSummary.sampleSize = 1;
+        assert.throws(() => assertEvidenceSafe(forged), /scoreSummary/i);
+      }
+      assert.doesNotMatch(
+        readFileSync(join(fixture.generated, "evidence-manifest.json"), "utf8"),
+        /outputId|participant/,
+      );
+    } finally {
+      fixture.cleanup();
+    }
+  }
+});
+
+test("hosted evidence rejects an all-pass live register without exactly fifteen scores", () => {
+  for (const sampleSize of [0, 14]) {
+    const fixture = createEvidenceFixture();
+    try {
+      if (sampleSize === 0) rmSync(fixture.ledgerPath);
+      else writeScoreLedger(fixture.ledgerPath, scoreRecords().slice(0, sampleSize));
+      assert.throws(() => collect(fixture), /evidence (?:input|scoreSummary)/i);
+    } finally {
+      fixture.cleanup();
+    }
+  }
+});
+
+test("hosted evidence permits partial approved inventory only for a non-passing H2/H3 register", () => {
+  for (const livePass of [false, true]) {
+    const fixture = createEvidenceFixture();
+    try {
+      const inventoryPath = join(fixture.generated, "resource-inventory.json");
+      const inventory = JSON.parse(readFileSync(inventoryPath, "utf8"));
+      inventory.apps = inventory.apps.filter(({ name }: { name: string }) =>
+        ["alpha-ticker-stage-a-hosted-sandboxes", "alpha-ticker-stage-a-egress"].includes(name),
+      );
+      inventory.managedPostgres = null;
+      inventory.objectStorage = null;
+      inventory.sandboxRegistry = null;
+      writeJson(inventoryPath, inventory);
+      if (!livePass) {
+        writeLiveChecks(
+          fixture.generated,
+          4.5,
+          1.25,
+          liveCheckIds.map((id, index) => ({ id, status: index === 0 ? "fail" : "not-run" })),
+        );
+      }
+
+      if (livePass) assert.throws(() => collect(fixture), /evidence inventory/i);
+      else assert.equal(collect(fixture).pass, false);
+    } finally {
+      fixture.cleanup();
+    }
   }
 });
 

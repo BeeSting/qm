@@ -41,15 +41,14 @@ node - "$REPO_ROOT" <<'NODE'
 "use strict";
 
 const { spawnSync } = require("node:child_process");
-const { closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpathSync } = require("node:fs");
+const { closeSync, constants, fstatSync, lstatSync, openSync, readSync } = require("node:fs");
 const { join, resolve } = require("node:path");
 
 const root = resolve(process.argv[2]);
 const deployment = join(root, "deploy", "layers", "alpha-ticker-stage-a-hosted");
 const generated = join(root, ".generated", "alpha-ticker-stage-a-hosted");
+const activationScript = join(root, "scripts", "alpha-ticker-stage-a-hosted", "activation-record.mjs");
 const expectedOrg = "personal";
-const expectedQmVersion = "0.1.4";
-const expectedQmBinRelative = "dist/bin/qm.js";
 const apps = [
   "alpha-ticker-stage-a-hosted-core",
   "alpha-ticker-stage-a-hosted-web-ui",
@@ -154,10 +153,16 @@ function validateInventory() {
     ["flyOrg", "apps", "managedPostgres", "objectStorage", "sandboxRegistry"],
     "resource-inventory-invalid",
   );
-  if (value.flyOrg !== expectedOrg || !Array.isArray(value.apps) || value.apps.length !== apps.length) {
+  if (
+    value.flyOrg !== expectedOrg ||
+    !Array.isArray(value.apps) ||
+    value.apps.length < 1 ||
+    value.apps.length > apps.length
+  ) {
     stop("resource-inventory-invalid");
   }
   const ids = new Set();
+  const names = new Set();
   const validateEntry = (entry, expectedName) => {
     exactObject(entry, ["name", "id"], "resource-inventory-invalid");
     if (entry.name !== expectedName || typeof entry.id !== "string" || !/^[A-Za-z0-9._:-]{1,255}$/.test(entry.id)) {
@@ -168,14 +173,20 @@ function validateInventory() {
     return entry.id;
   };
   const appIds = new Map();
-  value.apps.forEach((entry, index) => appIds.set(apps[index], validateEntry(entry, apps[index])));
-  validateEntry(value.managedPostgres, "alpha-ticker-stage-a-hosted-pg");
-  validateEntry(value.objectStorage, "alpha-ticker-stage-a-hosted-data");
-  validateEntry(value.sandboxRegistry, "alpha-ticker-stage-a-hosted-sandboxes");
-  return appIds;
+  for (const entry of value.apps) {
+    if (!entry || !apps.includes(entry.name) || names.has(entry.name)) stop("resource-inventory-invalid");
+    appIds.set(entry.name, validateEntry(entry, entry.name));
+    names.add(entry.name);
+  }
+  const optionalEntry = (entry, expectedName) => (entry === null ? false : Boolean(validateEntry(entry, expectedName)));
+  const managedPostgresCaptured = optionalEntry(value.managedPostgres, "alpha-ticker-stage-a-hosted-pg");
+  const objectStorageCaptured = optionalEntry(value.objectStorage, "alpha-ticker-stage-a-hosted-data");
+  optionalEntry(value.sandboxRegistry, "alpha-ticker-stage-a-hosted-sandboxes");
+  return { appIds, managedPostgresCaptured, objectStorageCaptured };
 }
 
-function validateTeardownEvidence() {
+function validateTeardownEvidence({ managedPostgresCaptured, objectStorageCaptured }) {
+  if (!managedPostgresCaptured && !objectStorageCaptured) return true;
   const value = parseJsonSnapshot(teardownEvidencePath, "teardown-evidence-invalid", { privateMode: true });
   exactObject(
     value,
@@ -190,52 +201,44 @@ function validateTeardownEvidence() {
       stop("teardown-evidence-invalid");
     }
   }
-  return value.managedPostgresDeleted === true && value.objectStorageDeleted === true;
+  return (
+    (!managedPostgresCaptured || value.managedPostgresDeleted === true) &&
+    (!objectStorageCaptured || value.objectStorageDeleted === true)
+  );
 }
 
 function run(command, args, failure) {
   if (timeoutMs === null) stop(failure);
-  const result = spawnSync(command, args, {
-    cwd: deployment,
-    encoding: "utf8",
-    input: "",
-    timeout: timeoutMs,
-    killSignal: "SIGTERM",
-    maxBuffer: maxCommandBytes,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+  const result = spawnSync(
+    process.execPath,
+    [activationScript, "--run-timeout", String(timeoutMs), "--", command, ...args],
+    {
+      cwd: deployment,
+      encoding: "utf8",
+      input: "",
+      maxBuffer: maxCommandBytes,
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
   if (result.error || result.status !== 0 || result.signal !== null) stop(failure);
   if (Buffer.byteLength(result.stdout ?? "", "utf8") > maxCommandBytes) stop(failure);
   return result.stdout;
 }
 
-function verifyQmBinary() {
-  const packageJson = parseJsonSnapshot(join(deployment, "package.json"), "qm-binary-invalid");
-  const packageLock = parseJsonSnapshot(join(deployment, "package-lock.json"), "qm-binary-invalid");
-  const installedPackage = parseJsonSnapshot(
-    join(deployment, "node_modules", "@yc-software", "qm", "package.json"),
-    "qm-binary-invalid",
+function verifyQmInstall() {
+  const result = spawnSync(
+    process.execPath,
+    [activationScript, "--verify-qm-install", "--root", deployment],
+    {
+      cwd: deployment,
+      encoding: "utf8",
+      input: "",
+      maxBuffer: maxCommandBytes,
+      stdio: ["ignore", "pipe", "pipe"],
+    },
   );
-  if (
-    packageJson.dependencies?.["@yc-software/qm"] !== expectedQmVersion ||
-    packageLock.packages?.[""]?.dependencies?.["@yc-software/qm"] !== expectedQmVersion ||
-    packageLock.packages?.["node_modules/@yc-software/qm"]?.version !== expectedQmVersion ||
-    installedPackage.version !== expectedQmVersion ||
-    installedPackage.bin?.qm !== expectedQmBinRelative
-  ) {
-    stop("qm-binary-invalid");
-  }
-  const expectedTarget = join(deployment, "node_modules", "@yc-software", "qm", expectedQmBinRelative);
-  const shim = join(deployment, "node_modules", ".bin", "qm");
-  try {
-    const targetStat = lstatSync(expectedTarget);
-    const shimStat = lstatSync(shim);
-    if (!targetStat.isFile() || (targetStat.mode & 0o111) === 0 || !shimStat.isSymbolicLink()) stop("qm-binary-invalid");
-    if (realpathSync(shim) !== realpathSync(expectedTarget)) stop("qm-binary-invalid");
-  } catch {
-    stop("qm-binary-invalid");
-  }
-  return expectedTarget;
+  if (result.error || result.status !== 0 || result.signal !== null) stop("qm-install-invalid");
+  return join(deployment, "node_modules", "@yc-software", "qm", "dist", "bin", "qm.js");
 }
 
 function parseFlyInventory(text, appIds) {
@@ -254,6 +257,7 @@ function parseFlyInventory(text, appIds) {
       stop("fly-inventory-invalid");
     }
     if (expectedIds.has(entry.ID) && expectedIds.get(entry.ID) !== entry.Name) stop("fly-identity-refused");
+    if (apps.includes(entry.Name) && !appIds.has(entry.Name)) stop("fly-uncaptured-app-refused");
     if (!appIds.has(entry.Name)) continue;
     if (exact.has(entry.Name)) stop("fly-inventory-invalid");
     if (entry.Organization !== expectedOrg) stop("fly-ownership-refused");
@@ -267,9 +271,10 @@ function listFlyApps(appIds) {
   return parseFlyInventory(run("fly", ["apps", "list", "--org", expectedOrg, "--json"], "fly-inventory-invalid"), appIds);
 }
 
-const appIds = validateInventory();
-const deletionComplete = validateTeardownEvidence();
-const qmBin = verifyQmBinary();
+const inventory = validateInventory();
+const appIds = inventory.appIds;
+const deletionComplete = validateTeardownEvidence(inventory);
+const qmBin = verifyQmInstall();
 const initialApps = listFlyApps(appIds);
 if (initialApps.size > 0) {
   run(qmBin, ["down"], "qm-down-failed");

@@ -300,12 +300,23 @@ export function assertEvidenceSafe(manifest) {
     exactOwnKeys(check, CHECK_KEYS, "check");
     if (check.id !== CHECK_IDS[index]) fail("check id");
     if (check.status !== "pass" && check.status !== "fail") fail("check status");
-    assertSha256(check.artifactSha256, "artifactSha256");
+    if (check.artifactSha256 === null) {
+      if (check.id !== "evaluation-ledger" || check.status !== "fail") fail("artifactSha256");
+    } else {
+      assertSha256(check.artifactSha256, "artifactSha256");
+    }
   }
   if (manifest.checks[4].artifactSha256 !== manifest.sandboxDigest) fail("sandboxDigest");
 
   exactOwnKeys(manifest.counts, COUNT_KEYS, "counts");
-  if (manifest.counts.principals !== 3 || manifest.counts.scoredOutputs !== 15) fail("counts");
+  if (
+    manifest.counts.principals !== 3 ||
+    !Number.isInteger(manifest.counts.scoredOutputs) ||
+    manifest.counts.scoredOutputs < 0 ||
+    manifest.counts.scoredOutputs > 15
+  ) {
+    fail("counts");
+  }
   exactOwnKeys(manifest.scoreSummary, SCORE_KEYS, "scoreSummary");
   for (const field of ["sampleSize", "disclosurePasses", "acceptedWithMinorOrLess", "incidentCount"]) {
     assertNonNegativeInteger(manifest.scoreSummary[field], field);
@@ -313,7 +324,16 @@ export function assertEvidenceSafe(manifest) {
   for (const field of ["medianUsefulness", "medianFactualConsistency", "medianElapsedMs", "totalCostUsd"]) {
     assertNonNegativeFinite(manifest.scoreSummary[field], field);
   }
-  if (manifest.scoreSummary.sampleSize !== 15 || typeof manifest.scoreSummary.pass !== "boolean") fail("scoreSummary");
+  if (
+    manifest.scoreSummary.sampleSize !== manifest.counts.scoredOutputs ||
+    manifest.scoreSummary.sampleSize > 15 ||
+    typeof manifest.scoreSummary.pass !== "boolean"
+  ) {
+    fail("scoreSummary");
+  }
+  if (manifest.scoreSummary.pass && manifest.scoreSummary.sampleSize !== 15) fail("scoreSummary");
+  if (manifest.checks[5].artifactSha256 === null && manifest.scoreSummary.sampleSize !== 0) fail("scoreSummary");
+  if (manifest.checks[7].status === "pass" && manifest.scoreSummary.sampleSize !== 15) fail("scoreSummary");
 
   exactOwnKeys(manifest.spendSummary, SPEND_KEYS, "spendSummary");
   for (const field of SPEND_KEYS) assertNonNegativeFinite(manifest.spendSummary[field], field);
@@ -401,6 +421,16 @@ function snapshotRegularFile(id, path, maxBytes = MAX_INPUT_BYTES, hooks = {}, {
     fail("input invalid");
   }
   return snapshot;
+}
+
+function snapshotOptionalRegularFile(id, path, maxBytes = MAX_INPUT_BYTES, hooks = {}, options = {}) {
+  try {
+    lstatSync(path);
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    fail("input invalid");
+  }
+  return snapshotRegularFile(id, path, maxBytes, hooks, options);
 }
 
 function parseSnapshotJson(snapshot, kind = "input invalid") {
@@ -629,13 +659,19 @@ function validateEgress(snapshot) {
   if (!snapshot.bytes.equals(Buffer.from(EXPECTED_EGRESS))) fail("egress invalid");
 }
 
-function validateInventory(snapshot) {
+function validateInventory(snapshot, { requireFullApps = false } = {}) {
   const value = parseSnapshotJson(snapshot, "input invalid");
   exactOwnKeys(value, ["flyOrg", "apps", "managedPostgres", "objectStorage", "sandboxRegistry"], "inventory invalid");
-  if (value.flyOrg !== "personal" || !Array.isArray(value.apps) || value.apps.length !== HOSTED_APPS.length) {
+  if (
+    value.flyOrg !== "personal" ||
+    !Array.isArray(value.apps) ||
+    value.apps.length < 1 ||
+    value.apps.length > HOSTED_APPS.length
+  ) {
     fail("inventory invalid");
   }
   const ids = new Set();
+  const appNames = new Set();
   const validateEntry = (entry, expectedName) => {
     exactOwnKeys(entry, ["name", "id"], "inventory invalid");
     if (entry.name !== expectedName || typeof entry.id !== "string" || !/^[A-Za-z0-9._:-]{1,255}$/.test(entry.id)) {
@@ -644,10 +680,19 @@ function validateInventory(snapshot) {
     if (ids.has(entry.id)) fail("inventory invalid");
     ids.add(entry.id);
   };
-  value.apps.forEach((entry, index) => validateEntry(entry, HOSTED_APPS[index]));
-  validateEntry(value.managedPostgres, "alpha-ticker-stage-a-hosted-pg");
-  validateEntry(value.objectStorage, "alpha-ticker-stage-a-hosted-data");
-  validateEntry(value.sandboxRegistry, "alpha-ticker-stage-a-hosted-sandboxes");
+  for (const entry of value.apps) {
+    if (!HOSTED_APPS.includes(entry?.name) || appNames.has(entry.name)) fail("inventory invalid");
+    validateEntry(entry, entry.name);
+    appNames.add(entry.name);
+  }
+  if (requireFullApps && HOSTED_APPS.some((name) => !appNames.has(name))) fail("inventory invalid");
+  for (const [entry, expectedName] of [
+    [value.managedPostgres, "alpha-ticker-stage-a-hosted-pg"],
+    [value.objectStorage, "alpha-ticker-stage-a-hosted-data"],
+    [value.sandboxRegistry, "alpha-ticker-stage-a-hosted-sandboxes"],
+  ]) {
+    if (entry !== null) validateEntry(entry, expectedName);
+  }
 }
 
 function parseLiveChecks(snapshot) {
@@ -696,6 +741,19 @@ function parseScoreLedger(snapshot) {
     } catch {
       fail("input invalid");
     }
+  }
+  if (records.length === 0) {
+    return {
+      sampleSize: 0,
+      disclosurePasses: 0,
+      acceptedWithMinorOrLess: 0,
+      medianUsefulness: 0,
+      medianFactualConsistency: 0,
+      medianElapsedMs: 0,
+      totalCostUsd: 0,
+      incidentCount: 0,
+      pass: false,
+    };
   }
   try {
     return summarizeScoreRecords(records);
@@ -974,13 +1032,11 @@ export function collectEvidence({
   const repository = snapshotRepositoryEvidenceInputs(root, hooks);
   const paths = {
     activation: join(generated, "activation.json"),
-    ledger: join(generated, "scores.jsonl"),
     inventory: join(generated, "resource-inventory.json"),
     liveChecks: join(generated, "live-checks.json"),
   };
   const snapshotIds = {
     activation: "activation-record",
-    ledger: "evaluation-ledger",
     inventory: "resource-inventory",
     liveChecks: "live-checks",
   };
@@ -988,6 +1044,13 @@ export function collectEvidence({
   for (const [id, path] of Object.entries(paths)) {
     snapshots[id] = snapshotRegularFile(snapshotIds[id], path, MAX_INPUT_BYTES, hooks, { requiredMode: 0o600 });
   }
+  snapshots.ledger = snapshotOptionalRegularFile(
+    "evaluation-ledger",
+    join(generated, "scores.jsonl"),
+    MAX_INPUT_BYTES,
+    hooks,
+    { requiredMode: 0o600 },
+  );
 
   const baseline = repository.baseline;
   const resolvedCommit = commit ?? execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
@@ -1000,11 +1063,13 @@ export function collectEvidence({
   } catch {
     fail("activation invalid");
   }
-  validateInventory(snapshots.inventory);
   const liveChecks = parseLiveChecks(snapshots.liveChecks);
   const liveChecksPass = liveChecks.checks.every((check) => check.status === "pass");
-  const scoreSummary = parseScoreLedger(snapshots.ledger);
-  if (scoreSummary.sampleSize !== 15) fail("scoreSummary");
+  validateInventory(snapshots.inventory, { requireFullApps: liveChecksPass });
+  if (liveChecksPass && snapshots.ledger === null) fail("scoreSummary");
+  const scoreSummary =
+    snapshots.ledger === null ? parseScoreLedger({ bytes: Buffer.alloc(0) }) : parseScoreLedger(snapshots.ledger);
+  if (liveChecksPass && scoreSummary.sampleSize !== 15) fail("scoreSummary");
   if (liveChecks.spendSummary.allTurnModelCostUsd < scoreSummary.totalCostUsd) fail("spendSummary");
 
   const digest = repository.digest;
@@ -1014,7 +1079,11 @@ export function collectEvidence({
     { id: "hosted-config", status: "pass", artifactSha256: repository.snapshots.config.hash },
     { id: "egress-proxy-config", status: "pass", artifactSha256: repository.snapshots.egress.hash },
     { id: "sandbox-bundle", status: "pass", artifactSha256: digest },
-    { id: "evaluation-ledger", status: scoreSummary.pass ? "pass" : "fail", artifactSha256: snapshots.ledger.hash },
+    {
+      id: "evaluation-ledger",
+      status: scoreSummary.pass ? "pass" : "fail",
+      artifactSha256: snapshots.ledger?.hash ?? null,
+    },
     { id: "resource-inventory", status: "pass", artifactSha256: snapshots.inventory.hash },
     {
       id: "live-checks",
