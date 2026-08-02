@@ -11,7 +11,9 @@ DEPLOYMENT_REL="deploy/layers/alpha-ticker-stage-a-hosted"
 DEPLOYMENT_ROOT="$REPO_ROOT/$DEPLOYMENT_REL"
 ACTIVATION_FILE="$REPO_ROOT/.generated/alpha-ticker-stage-a-hosted/activation.json"
 ENV_FILE="$DEPLOYMENT_ROOT/.env"
+QM_BIN="$DEPLOYMENT_ROOT/node_modules/.bin/qm"
 EXPECTED_PLAN_ERROR='error: "sandbox.app" is set but no sandbox layer image is pinned; run `qm sandbox publish` to build and record the digest-pinned "sandbox.image" agents boot from'
+COMMAND_TIMEOUT_SECONDS=${ALPHA_TICKER_PREFLIGHT_TIMEOUT_SECONDS:-30}
 
 pass() {
   printf '%s: pass\n' "$1"
@@ -22,37 +24,39 @@ fail() {
   exit 1
 }
 
-contains_token() {
-  printf '%s\n' "$1" | awk -v expected="$2" '
-    {
-      for (field = 1; field <= NF; field += 1) {
-        if ($field == expected) found = 1
-      }
-    }
-    END { exit found ? 0 : 1 }
-  '
+run_with_timeout() {
+  node "$SCRIPT_DIR/activation-record.mjs" --run-timeout "$((COMMAND_TIMEOUT_SECONDS * 1000))" -- "$@"
 }
 
-contains_any_token() {
-  output=$1
-  shift
-  for expected in "$@"; do
-    if contains_token "$output" "$expected"; then
-      return 0
-    fi
-  done
-  return 1
-}
-
-file_mode() {
-  mode=$(stat -f '%Lp' "$1" 2>/dev/null || true)
-  case "$mode" in
-    ""|*[!0-7]*) mode=$(stat -c '%a' "$1" 2>/dev/null || true) ;;
+file_identity() {
+  identity=$(stat -f '%d:%i:%Lp' "$1" 2>/dev/null || true)
+  case "$identity" in
+    *:*:600) ;;
+    *) identity=$(stat -c '%d:%i:%a' "$1" 2>/dev/null || true) ;;
   esac
-  printf '%s' "$mode"
+  printf '%s' "$identity"
+}
+
+env_is_unchanged() {
+  [ -f "$ENV_FILE" ] &&
+    [ ! -L "$ENV_FILE" ] &&
+    [ "$(file_identity "$ENV_FILE")" = "$ENV_IDENTITY" ]
+}
+
+validate_fly_json() {
+  kind=$1
+  input=$2
+  node "$SCRIPT_DIR/activation-record.mjs" --fly-json "$kind" --input "$input" >/dev/null 2>&1
 }
 
 cd "$REPO_ROOT" || fail "worktree"
+
+case "$COMMAND_TIMEOUT_SECONDS" in
+  ""|*[!0-9]*) fail "runtime" ;;
+esac
+if [ "$COMMAND_TIMEOUT_SECONDS" -lt 1 ] || [ "$COMMAND_TIMEOUT_SECONDS" -gt 300 ]; then
+  fail "runtime"
+fi
 
 node_version=$(node --version 2>/dev/null) || fail "runtime"
 npm_version=$(npm --version 2>/dev/null) || fail "runtime"
@@ -72,39 +76,58 @@ if ! node "$SCRIPT_DIR/check-boundary.mjs" >/dev/null 2>&1; then
 fi
 pass "hosted-boundary"
 
-if ! docker buildx version >/dev/null 2>&1; then
+# PATH-provided Node/npm/git/docker/fly are operator-controlled prerequisites.
+# QM is different: it must be the dependency installed inside the pinned hosted layer.
+if [ ! -x "$QM_BIN" ]; then
+  fail "qm-binary"
+fi
+if [ ! -L "$QM_BIN" ]; then
+  fail "qm-binary"
+fi
+qm_target=$(readlink "$QM_BIN" 2>/dev/null) || fail "qm-binary"
+if [ "$qm_target" != "../@yc-software/qm/dist/bin/qm.js" ]; then
+  fail "qm-binary"
+fi
+pass "qm-binary"
+
+if ! run_with_timeout docker buildx version >/dev/null 2>&1; then
   fail "docker-buildx"
 fi
 pass "docker-buildx"
 
-if ! fly auth whoami >/dev/null 2>&1; then
+if ! run_with_timeout fly auth whoami >/dev/null 2>&1; then
   fail "fly-auth"
 fi
 pass "fly-auth"
 
-regions=$(fly platform regions 2>/dev/null) || fail "fly-region"
-if ! contains_token "$regions" "jnb"; then
+TEMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/alpha-ticker-hosted-preflight.XXXXXX") || fail "fly-region"
+chmod 700 "$TEMP_DIR" || fail "fly-region"
+trap 'rm -rf "$TEMP_DIR"' EXIT
+
+regions_file="$TEMP_DIR/regions.json"
+if ! run_with_timeout fly platform regions --json >"$regions_file" 2>/dev/null; then
+  fail "fly-region"
+fi
+if ! validate_fly_json "regions" "$regions_file"; then
   fail "fly-region"
 fi
 pass "fly-region"
 
-apps=$(fly apps list --org personal 2>/dev/null) || fail "fly-app-names"
-if contains_any_token "$apps" \
-  "alpha-ticker-stage-a-hosted-core" \
-  "alpha-ticker-stage-a-hosted-web-ui" \
-  "alpha-ticker-stage-a-hosted-admin" \
-  "alpha-ticker-stage-a-hosted-portal" \
-  "alpha-ticker-stage-a-hosted-auth" \
-  "alpha-ticker-stage-a-hosted-sandboxes" \
-  "alpha-ticker-stage-a-egress"; then
+apps_file="$TEMP_DIR/apps.json"
+if ! run_with_timeout fly apps list --org personal --json >"$apps_file" 2>/dev/null; then
+  fail "fly-app-names"
+fi
+if ! validate_fly_json "apps" "$apps_file"; then
   fail "fly-app-names"
 fi
 pass "fly-app-names"
 
-mpg=$(fly mpg list --org personal 2>/dev/null) || fail "fly-data-resource-names"
-storage=$(fly storage list --org personal 2>/dev/null) || fail "fly-data-resource-names"
-if contains_token "$mpg" "alpha-ticker-stage-a-hosted-pg" || \
-  contains_token "$storage" "alpha-ticker-stage-a-hosted-data"; then
+mpg_file="$TEMP_DIR/mpg.json"
+storage_file="$TEMP_DIR/storage.json"
+if ! run_with_timeout fly mpg list --org personal --json >"$mpg_file" 2>/dev/null ||
+  ! validate_fly_json "mpg" "$mpg_file" ||
+  ! run_with_timeout fly storage list --org personal --json >"$storage_file" 2>/dev/null ||
+  ! validate_fly_json "storage" "$storage_file"; then
   fail "fly-data-resource-names"
 fi
 pass "fly-data-resource-names"
@@ -114,27 +137,41 @@ if ! node "$SCRIPT_DIR/activation-record.mjs" --input "$ACTIVATION_FILE" >/dev/n
 fi
 pass "activation-record"
 
-if [ ! -f "$ENV_FILE" ] || [ -L "$ENV_FILE" ] || [ "$(file_mode "$ENV_FILE")" != "600" ]; then
+if [ ! -f "$ENV_FILE" ] || [ -L "$ENV_FILE" ]; then
   fail "env-file"
 fi
+ENV_IDENTITY=$(file_identity "$ENV_FILE")
+case "$ENV_IDENTITY" in
+  *:*:600) ;;
+  *) fail "env-file" ;;
+esac
 if ! git check-ignore --quiet "$DEPLOYMENT_REL/.env" >/dev/null 2>&1; then
   fail "env-file"
 fi
 pass "env-file"
 
-if ! (cd "$DEPLOYMENT_ROOT" && npm exec qm -- check >/dev/null 2>&1); then
+if ! env_is_unchanged; then
+  fail "env-file"
+fi
+if ! (cd "$DEPLOYMENT_ROOT" && run_with_timeout "$QM_BIN" check >/dev/null 2>&1); then
   fail "qm-check"
 fi
 pass "qm-check"
 
-if ! (cd "$DEPLOYMENT_ROOT" && npm exec qm -- sandbox build --dry-run >/dev/null 2>&1); then
+if ! env_is_unchanged; then
+  fail "env-file"
+fi
+if ! (cd "$DEPLOYMENT_ROOT" && run_with_timeout "$QM_BIN" sandbox build --dry-run >/dev/null 2>&1); then
   fail "qm-sandbox-dry-run"
 fi
 pass "qm-sandbox-dry-run"
 
-plan_output=$(cd "$DEPLOYMENT_ROOT" && npm exec qm -- plan 2>&1)
+if ! env_is_unchanged; then
+  fail "env-file"
+fi
+plan_output=$(cd "$DEPLOYMENT_ROOT" && run_with_timeout "$QM_BIN" plan 2>&1)
 plan_status=$?
-if [ "$plan_status" -eq 0 ] || [ "$plan_output" != "$EXPECTED_PLAN_ERROR" ]; then
+if [ "$plan_status" -ne 1 ] || [ "$plan_output" != "$EXPECTED_PLAN_ERROR" ]; then
   fail "qm-plan-missing-image-pin"
 fi
 pass "qm-plan-missing-image-pin"

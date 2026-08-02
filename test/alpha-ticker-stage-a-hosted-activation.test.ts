@@ -49,7 +49,9 @@ interface PreflightScenario {
   dirtyTracked?: boolean;
   boundaryExit?: number;
   buildxExit?: number;
+  qmBinary?: "present" | "missing" | "unexpected-symlink";
   flyAuthExit?: number;
+  flyAuthDelaySeconds?: number;
   regionsExit?: number;
   regions?: string;
   appsExit?: number;
@@ -66,6 +68,7 @@ interface PreflightScenario {
   qmBuildExit?: number;
   qmPlanExit?: number;
   qmPlanOutput?: string;
+  mutateEnvAfterQmCheck?: boolean;
 }
 
 interface PreflightResult {
@@ -103,6 +106,13 @@ function cli(record: unknown) {
   return result;
 }
 
+function cliPath(input: string) {
+  return spawnSync(process.execPath, [activationScript, "--input", input], {
+    encoding: "utf8",
+    env: { ...process.env, NO_COLOR: "1" },
+  });
+}
+
 function shellQuote(value: string): string {
   return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
@@ -117,10 +127,15 @@ function createPreflightScenario(scenario: PreflightScenario = {}): PreflightRes
   const scriptRoot = join(root, "scripts", "alpha-ticker-stage-a-hosted");
   const deploymentRoot = join(root, hostedRoot);
   const generatedRoot = dirname(join(root, activationRelativePath));
+  const qmBinRoot = join(deploymentRoot, "node_modules", ".bin");
+  const qmPackageBinRoot = join(deploymentRoot, "node_modules", "@yc-software", "qm", "dist", "bin");
+  const callLog = join(root, "external-calls.log");
   mkdirSync(shimRoot, { recursive: true });
   mkdirSync(scriptRoot, { recursive: true });
   mkdirSync(deploymentRoot, { recursive: true });
   mkdirSync(generatedRoot, { recursive: true });
+  mkdirSync(qmBinRoot, { recursive: true });
+  mkdirSync(qmPackageBinRoot, { recursive: true });
   copyFileSync(activationScript, join(scriptRoot, "activation-record.mjs"));
   copyFileSync(preflightScript, join(scriptRoot, "preflight.sh"));
   chmodSync(join(scriptRoot, "preflight.sh"), 0o700);
@@ -160,13 +175,26 @@ function createPreflightScenario(scenario: PreflightScenario = {}): PreflightRes
       `  printf '%s\\n' ${shellQuote(sentinel)} >&2\n` +
       `  exit 0\n` +
       `fi\n` +
-      `case "$*" in\n` +
-      `  "exec qm -- check") printf '%s\\n' ${shellQuote(sentinel)} >&2; exit ${scenario.qmCheckExit ?? 0} ;;\n` +
-      `  "exec qm -- sandbox build --dry-run") printf '%s\\n' ${shellQuote(sentinel)} >&2; exit ${scenario.qmBuildExit ?? 0} ;;\n` +
-      `  "exec qm -- plan") [ "\${NO_COLOR-}" = "1" ] || { printf '%s\\n' 'colorized-output'; exit 1; }; printf '%s\\n' ${shellQuote(scenario.qmPlanOutput ?? `error: ${missingImagePin}`)}; exit ${scenario.qmPlanExit ?? 1} ;;\n` +
-      `  *) exit 99 ;;\n` +
-      `esac\n`,
+      `printf '%s\\n' 'npm-network-capable-command' >> ${shellQuote(callLog)}\n` +
+      `exit 99\n`,
   );
+
+  if (scenario.qmBinary !== "missing") {
+    writeShim(
+      join(qmPackageBinRoot, "qm.js"),
+      `case "$*" in\n` +
+        `  "check") printf '%s\\n' ${shellQuote(sentinel)} >&2; ${scenario.mutateEnvAfterQmCheck ? `rm -f .env; printf '%s\\n' ${shellQuote(envContent.trim())} > .env; chmod 600 .env` : ":"}; exit ${scenario.qmCheckExit ?? 0} ;;\n` +
+        `  "sandbox build --dry-run") printf '%s\\n' ${shellQuote(sentinel)} >&2; exit ${scenario.qmBuildExit ?? 0} ;;\n` +
+        `  "plan") [ "\${NO_COLOR-}" = "1" ] || { printf '%s\\n' 'colorized-output'; exit 1; }; printf '%s\\n' ${shellQuote(scenario.qmPlanOutput ?? `error: ${missingImagePin}`)}; exit ${scenario.qmPlanExit ?? 1} ;;\n` +
+        `  *) exit 99 ;;\n` +
+        `esac\n`,
+    );
+    if (scenario.qmBinary === "unexpected-symlink") {
+      symlinkSync("../@yc-software/qm/dist/bin/not-qm.js", join(qmBinRoot, "qm"));
+    } else {
+      symlinkSync("../@yc-software/qm/dist/bin/qm.js", join(qmBinRoot, "qm"));
+    }
+  }
 
   writeShim(
     join(shimRoot, "git"),
@@ -180,20 +208,22 @@ function createPreflightScenario(scenario: PreflightScenario = {}): PreflightRes
 
   writeShim(
     join(shimRoot, "docker"),
-    `printf '%s\\n' ${shellQuote(sentinel)} >&2\n` +
+    `printf '%s\\n' 'docker' >> ${shellQuote(callLog)}\n` +
+      `printf '%s\\n' ${shellQuote(sentinel)} >&2\n` +
       `if [ "$*" = "buildx version" ]; then exit ${scenario.buildxExit ?? 0}; fi\n` +
       `exit 99\n`,
   );
 
   writeShim(
     join(shimRoot, "fly"),
-    `printf '%s\\n' ${shellQuote(sentinel)} >&2\n` +
+    `printf '%s\\n' 'fly' >> ${shellQuote(callLog)}\n` +
+      `printf '%s\\n' ${shellQuote(sentinel)} >&2\n` +
       `case "$*" in\n` +
-      `  "auth whoami") printf '%s\\n' ${shellQuote("private-operator-identity")}; exit ${scenario.flyAuthExit ?? 0} ;;\n` +
-      `  "platform regions") printf '%s\\n' ${shellQuote(scenario.regions ?? "Johannesburg jnb")}; exit ${scenario.regionsExit ?? 0} ;;\n` +
-      `  "apps list --org personal") printf '%s\\n' ${shellQuote(scenario.appOutput ?? "NAME OWNER STATUS")}; exit ${scenario.appsExit ?? 0} ;;\n` +
-      `  "mpg list --org personal") printf '%s\\n' ${shellQuote(scenario.mpgOutput ?? "NAME STATUS")}; exit ${scenario.mpgExit ?? 0} ;;\n` +
-      `  "storage list --org personal") printf '%s\\n' ${shellQuote(scenario.storageOutput ?? "NAME STATUS")}; exit ${scenario.storageExit ?? 0} ;;\n` +
+      `  "auth whoami") ${scenario.flyAuthDelaySeconds ? `sleep ${scenario.flyAuthDelaySeconds};` : ":"} printf '%s\\n' ${shellQuote("private-operator-identity")}; exit ${scenario.flyAuthExit ?? 0} ;;\n` +
+      `  "platform regions --json") printf '%s\\n' ${shellQuote(scenario.regions ?? '[{"code":"jnb","name":"Johannesburg"}]')}; exit ${scenario.regionsExit ?? 0} ;;\n` +
+      `  "apps list --org personal --json") printf '%s\\n' ${shellQuote(scenario.appOutput ?? "[]")}; exit ${scenario.appsExit ?? 0} ;;\n` +
+      `  "mpg list --org personal --json") printf '%s\\n' ${shellQuote(scenario.mpgOutput ?? "[]")}; exit ${scenario.mpgExit ?? 0} ;;\n` +
+      `  "storage list --org personal --json") printf '%s\\n' ${shellQuote(scenario.storageOutput ?? "[]")}; exit ${scenario.storageExit ?? 0} ;;\n` +
       `  *) exit 99 ;;\n` +
       `esac\n`,
   );
@@ -204,6 +234,7 @@ function createPreflightScenario(scenario: PreflightScenario = {}): PreflightRes
     env: {
       ...process.env,
       PATH: `${shimRoot}:${process.env.PATH ?? ""}`,
+      ALPHA_TICKER_PREFLIGHT_TIMEOUT_SECONDS: "2",
       NO_COLOR: "",
       FORCE_COLOR: "",
     },
@@ -302,6 +333,21 @@ test("activation record rejects inherited, non-enumerable, and symbol extras", (
   }
 });
 
+test("activation record rejects accessors without executing getters", () => {
+  let getterExecuted = false;
+  const record = { ...acceptedRecord } as Record<string, unknown>;
+  Object.defineProperty(record, "flyOrg", {
+    enumerable: true,
+    get() {
+      getterExecuted = true;
+      return "personal";
+    },
+  });
+
+  assert.throws(() => assertActivationRecord(record), /invalid activation field: flyOrg/);
+  assert.equal(getterExecuted, false);
+});
+
 test("activation CLI failures name only the invalid field", () => {
   const privateValue = "private-org-do-not-leak";
   const result = cli({ ...acceptedRecord, flyOrg: privateValue });
@@ -330,16 +376,38 @@ test("activation module import through node stdin does not execute or crash", ()
   assert.equal(result.stderr, "");
 });
 
+test("activation CLI rejects symlinked and oversized inputs", () => {
+  const root = mkdtempSync(join(tmpdir(), "qm-activation-input-"));
+  try {
+    const target = join(root, "target.json");
+    const link = join(root, "activation-link.json");
+    const oversized = join(root, "activation-oversized.json");
+    writeFileSync(target, `${JSON.stringify(acceptedRecord)}\n`, { mode: 0o600 });
+    symlinkSync(target, link);
+    writeFileSync(oversized, " ".repeat(65_537), { mode: 0o600 });
+
+    for (const input of [link, oversized]) {
+      const result = cliPath(input);
+      assert.notEqual(result.status, 0);
+      assert.equal(result.stdout, "");
+      assert.equal(result.stderr, "activation-record: fail input\n");
+    }
+  } finally {
+    rmSync(root, { force: true, recursive: true });
+  }
+});
+
 test("hosted preflight passes with only named status output", () => {
   const result = createPreflightScenario();
   try {
-    assert.equal(result.status, 0);
+    assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
     assert.equal(
       result.stdout,
       [
         "runtime: pass",
         "worktree: pass",
         "hosted-boundary: pass",
+        "qm-binary: pass",
         "docker-buildx: pass",
         "fly-auth: pass",
         "fly-region: pass",
@@ -369,10 +437,34 @@ test("hosted preflight fails closed on runtime, worktree, boundary, tooling, and
   assertPreflightFailure({ npmVersion: "11.15.9" }, "runtime");
   assertPreflightFailure({ dirtyTracked: true }, "worktree");
   assertPreflightFailure({ boundaryExit: 1 }, "hosted-boundary");
+  assertPreflightFailure({ qmBinary: "missing" }, "qm-binary");
+  assertPreflightFailure({ qmBinary: "unexpected-symlink" }, "qm-binary");
   assertPreflightFailure({ buildxExit: 1 }, "docker-buildx");
   assertPreflightFailure({ flyAuthExit: 1 }, "fly-auth");
   assertPreflightFailure({ regionsExit: 1 }, "fly-region");
-  assertPreflightFailure({ regions: "Johannesburg jnb2" }, "fly-region");
+  assertPreflightFailure({ regions: '[{"code":"jnb2","name":"Johannesburg"}]' }, "fly-region");
+});
+
+test("hosted preflight detects a missing local QM binary before network-capable commands", () => {
+  const result = createPreflightScenario({ qmBinary: "missing" });
+  try {
+    assert.notEqual(result.status, 0);
+    assert.match(`${result.stdout}${result.stderr}`, /qm-binary: fail/);
+    const logPath = join(result.root, "external-calls.log");
+    let calls = "";
+    try {
+      calls = readFileSync(logPath, "utf8");
+    } catch {
+      // No call log is the expected strongest outcome.
+    }
+    assert.equal(calls, "");
+  } finally {
+    result.cleanup();
+  }
+});
+
+test("hosted preflight times out external commands without leaking their output", () => {
+  assertPreflightFailure({ flyAuthDelaySeconds: 3 }, "fly-auth");
 });
 
 test("hosted preflight fails closed when Fly inventory commands fail", () => {
@@ -392,11 +484,11 @@ test("hosted preflight rejects each exact app collision but permits near matches
     "alpha-ticker-stage-a-egress",
   ];
   for (const name of appNames) {
-    assertPreflightFailure({ appOutput: `NAME OWNER STATUS\n${name} personal deployed` }, "fly-app-names");
+    assertPreflightFailure({ appOutput: JSON.stringify([{ Name: name }]) }, "fly-app-names");
   }
 
   const result = createPreflightScenario({
-    appOutput: "NAME OWNER STATUS\nalpha-ticker-stage-a-hosted-core-near personal deployed",
+    appOutput: JSON.stringify([{ Name: "alpha-ticker-stage-a-hosted-core,near" }]),
   });
   try {
     assert.equal(result.status, 0);
@@ -406,11 +498,24 @@ test("hosted preflight rejects each exact app collision but permits near matches
 });
 
 test("hosted preflight rejects exact Managed Postgres and Tigris collisions", () => {
-  assertPreflightFailure({ mpgOutput: "NAME STATUS\nalpha-ticker-stage-a-hosted-pg ready" }, "fly-data-resource-names");
   assertPreflightFailure(
-    { storageOutput: "NAME STATUS\nalpha-ticker-stage-a-hosted-data ready" },
+    { mpgOutput: JSON.stringify([{ name: "alpha-ticker-stage-a-hosted-pg" }]) },
     "fly-data-resource-names",
   );
+  assertPreflightFailure(
+    { storageOutput: JSON.stringify([{ name: "alpha-ticker-stage-a-hosted-data" }]) },
+    "fly-data-resource-names",
+  );
+});
+
+test("hosted preflight rejects malformed and schema-invalid Fly JSON", () => {
+  assertPreflightFailure({ regions: "not-json" }, "fly-region");
+  assertPreflightFailure({ regions: '{"regions":[]}' }, "fly-region");
+  assertPreflightFailure({ regions: '[{"Code":"jnb"}]' }, "fly-region");
+  assertPreflightFailure({ appOutput: '[{"name":"untrusted-casing"}]' }, "fly-app-names");
+  assertPreflightFailure({ appOutput: '[{"Name":["not-a-string"]}]' }, "fly-app-names");
+  assertPreflightFailure({ mpgOutput: '{"data":[]}' }, "fly-data-resource-names");
+  assertPreflightFailure({ storageOutput: '[{"name":3}]' }, "fly-data-resource-names");
 });
 
 test("hosted preflight rejects invalid activation and unsafe env-file state", () => {
@@ -426,8 +531,13 @@ test("hosted preflight rejects QM check and sandbox dry-run failures", () => {
   assertPreflightFailure({ qmBuildExit: 1 }, "qm-sandbox-dry-run");
 });
 
+test("hosted preflight rejects env replacement between QM commands", () => {
+  assertPreflightFailure({ mutateEnvAfterQmCheck: true }, "env-file");
+});
+
 test("hosted preflight accepts only the known fail-closed missing-image-pin plan result", () => {
   assertPreflightFailure({ qmPlanExit: 0, qmPlanOutput: "plan unexpectedly passed" }, "qm-plan-missing-image-pin");
+  assertPreflightFailure({ qmPlanExit: 2, qmPlanOutput: `error: ${missingImagePin}` }, "qm-plan-missing-image-pin");
   assertPreflightFailure({ qmPlanExit: 1, qmPlanOutput: "some other failure" }, "qm-plan-missing-image-pin");
   assertPreflightFailure(
     { qmPlanExit: 1, qmPlanOutput: `${missingImagePin}\nanother failure` },
@@ -439,4 +549,5 @@ test("the activation source and preflight never contain test sentinel or secret 
   const source = `${readFileSync(activationScript, "utf8")}\n${readFileSync(preflightScript, "utf8")}`;
   assert.doesNotMatch(source, new RegExp(sentinel));
   assert.doesNotMatch(source, /sk-private-value-that-must-not-appear|private\.participant@example\.invalid/);
+  assert.doesNotMatch(source, /npm exec(?:\s|$)/);
 });
