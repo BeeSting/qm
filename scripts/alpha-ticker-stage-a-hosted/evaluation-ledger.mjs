@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -44,6 +44,11 @@ const SCORE_RECORD_KEY_SET = new Set(SCORE_RECORD_KEYS);
 const REQUIRED_PAIRS = new Set(
   PARTICIPANTS.flatMap((participant) => WORKFLOWS.map((workflow) => `${participant}:${workflow}`)),
 );
+const MICRODOLLARS_PER_USD = 1_000_000;
+const COST_LIMIT_MICRODOLLARS = 45_000_000;
+const MAX_LEDGER_BYTES = 64 * 1024;
+const MAX_LEDGER_LINE_BYTES = 16 * 1024;
+const MAX_LEDGER_RECORDS = 15;
 
 function fail(field) {
   throw new TypeError(`Invalid score record field: ${field}`);
@@ -57,9 +62,27 @@ function rejectForbiddenKeys(value, seen = new WeakSet()) {
   if (typeof value !== "object" || value === null || seen.has(value)) return;
   seen.add(value);
 
-  for (const key of Object.keys(value)) {
+  if (!Array.isArray(value)) {
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) fail("record");
+  }
+
+  for (const key of Reflect.ownKeys(value)) {
+    if (Array.isArray(value) && key === "length") continue;
+    if (typeof key === "symbol") fail("unsupportedKey");
     if (FORBIDDEN_KEYS.has(key)) fail(key);
-    rejectForbiddenKeys(value[key], seen);
+
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (
+      descriptor === undefined ||
+      !("value" in descriptor) ||
+      !descriptor.enumerable ||
+      !descriptor.writable ||
+      !descriptor.configurable
+    ) {
+      fail(key);
+    }
+    rejectForbiddenKeys(descriptor.value, seen);
   }
 }
 
@@ -84,12 +107,23 @@ function assertNonNegativeNumber(record, field) {
   }
 }
 
+function costToMicrodollars(value, field = "costUsd") {
+  const fixed = value.toFixed(6);
+  if (!/^(?:0|[1-9]\d*)\.\d{6}$/.test(fixed) || Number(fixed) !== value) fail(field);
+
+  const [whole, fraction] = fixed.split(".");
+  const microdollars = BigInt(whole) * BigInt(MICRODOLLARS_PER_USD) + BigInt(fraction);
+  if (microdollars > BigInt(Number.MAX_SAFE_INTEGER)) fail(field);
+  return Number(microdollars);
+}
+
 export function assertScoreRecord(record) {
   if (!isObject(record)) fail("record");
   rejectForbiddenKeys(record);
 
-  const keys = Object.keys(record);
+  const keys = Reflect.ownKeys(record);
   for (const key of keys) {
+    if (typeof key === "symbol") fail("unsupportedKey");
     if (!SCORE_RECORD_KEY_SET.has(key)) fail(key);
   }
   for (const key of SCORE_RECORD_KEYS) {
@@ -110,6 +144,7 @@ export function assertScoreRecord(record) {
   assertNonNegativeNumber(record, "inputTokens");
   assertNonNegativeNumber(record, "outputTokens");
   assertNonNegativeNumber(record, "costUsd");
+  costToMicrodollars(record.costUsd);
   if (record.model !== "gpt-5.6-terra") fail("model");
   assertNonEmptyString(record, "deploymentRevision");
   assertNonEmptyString(record, "incidentCategory");
@@ -126,12 +161,13 @@ function median(values) {
 
 export function summarizeScoreRecords(records) {
   if (!Array.isArray(records)) throw new TypeError("Invalid score records");
+  if (records.length < 1) fail("sampleSize");
 
   const outputIds = new Set();
   const workflowParticipantPairs = new Set();
   let disclosurePasses = 0;
   let acceptedWithMinorOrLess = 0;
-  let totalCostUsdRaw = 0;
+  let totalCostMicrodollars = 0;
   let incidentCount = 0;
   const usefulness = [];
   const factualConsistency = [];
@@ -159,9 +195,14 @@ export function summarizeScoreRecords(records) {
     usefulness.push(record.usefulness);
     factualConsistency.push(record.factualConsistency);
     elapsedMs.push(record.elapsedMs);
-    totalCostUsdRaw += record.costUsd;
+    const recordCostMicrodollars = costToMicrodollars(record.costUsd);
+    if (recordCostMicrodollars > Number.MAX_SAFE_INTEGER - totalCostMicrodollars) {
+      fail("totalCostUsd");
+    }
+    totalCostMicrodollars += recordCostMicrodollars;
     if (record.incidentCategory !== "none") incidentCount += 1;
   }
+  if (records.length > MAX_LEDGER_RECORDS) fail("sampleSize");
 
   const medianUsefulness = median(usefulness);
   const medianFactualConsistency = median(factualConsistency);
@@ -179,7 +220,7 @@ export function summarizeScoreRecords(records) {
     medianFactualConsistency >= 4 &&
     medianElapsedMs !== null &&
     medianElapsedMs <= 90_000 &&
-    totalCostUsdRaw <= 45 &&
+    totalCostMicrodollars <= COST_LIMIT_MICRODOLLARS &&
     incidentCount === 0;
 
   return {
@@ -189,25 +230,81 @@ export function summarizeScoreRecords(records) {
     medianUsefulness,
     medianFactualConsistency,
     medianElapsedMs,
-    totalCostUsd: Math.round(totalCostUsdRaw * 1_000_000) / 1_000_000,
+    totalCostUsd: totalCostMicrodollars / MICRODOLLARS_PER_USD,
     incidentCount,
     pass,
   };
 }
 
+class LedgerInputError extends TypeError {}
+
+function ledgerFail(field) {
+  throw new LedgerInputError(`Invalid score ledger field: ${field}`);
+}
+
+function readBoundedLedger(path) {
+  let pathStat;
+  try {
+    pathStat = lstatSync(path);
+  } catch {
+    ledgerFail("file");
+  }
+  if (pathStat.isSymbolicLink() || !pathStat.isFile()) ledgerFail("file");
+  if (pathStat.size > MAX_LEDGER_BYTES) ledgerFail("fileBytes");
+  if (!Number.isInteger(constants.O_NOFOLLOW)) ledgerFail("file");
+
+  let descriptor;
+  try {
+    descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  } catch {
+    ledgerFail("file");
+  }
+
+  try {
+    const descriptorStat = fstatSync(descriptor);
+    if (!descriptorStat.isFile() || descriptorStat.dev !== pathStat.dev || descriptorStat.ino !== pathStat.ino) {
+      ledgerFail("file");
+    }
+    if (descriptorStat.size > MAX_LEDGER_BYTES) ledgerFail("fileBytes");
+
+    const buffer = Buffer.allocUnsafe(MAX_LEDGER_BYTES + 1);
+    let bytesRead = 0;
+    while (bytesRead < buffer.length) {
+      const count = readSync(descriptor, buffer, bytesRead, buffer.length - bytesRead, null);
+      if (count === 0) break;
+      bytesRead += count;
+    }
+    if (bytesRead > MAX_LEDGER_BYTES) ledgerFail("fileBytes");
+    return buffer.subarray(0, bytesRead).toString("utf8");
+  } catch (error) {
+    if (error instanceof LedgerInputError) throw error;
+    ledgerFail("file");
+  } finally {
+    try {
+      closeSync(descriptor);
+    } catch {
+      // The descriptor is already unusable; preserve the sanitized primary result.
+    }
+  }
+}
+
 export function readScoreLedger(path) {
-  const lines = readFileSync(path, "utf8").split(/\r?\n/);
+  const content = readBoundedLedger(path);
+  const lines = content.split("\n");
   const records = [];
 
   for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index].trim();
+    const rawLine = lines[index];
+    if (Buffer.byteLength(rawLine, "utf8") > MAX_LEDGER_LINE_BYTES) ledgerFail("lineBytes");
+    const line = rawLine.trim();
     if (line === "") continue;
+    if (records.length === MAX_LEDGER_RECORDS) ledgerFail("sampleSize");
     try {
       const record = JSON.parse(line);
       assertScoreRecord(record);
       records.push(record);
     } catch {
-      throw new Error(`Invalid score ledger record at line ${index + 1}`);
+      ledgerFail("record");
     }
   }
 

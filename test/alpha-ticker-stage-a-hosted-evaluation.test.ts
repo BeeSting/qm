@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -91,6 +91,14 @@ function writeLedger(records: unknown[], suffix = "scores.jsonl") {
   return path;
 }
 
+function writeRawLedger(content: string, suffix = "scores.jsonl") {
+  const directory = mkdtempSync(join(tmpdir(), "qm-hosted-evaluation-"));
+  temporaryDirectories.push(directory);
+  const path = join(directory, suffix);
+  writeFileSync(path, content, { mode: 0o600 });
+  return { directory, path };
+}
+
 function runCli(path: string) {
   return spawnSync(process.execPath, [script, "--input", path], {
     cwd: process.cwd(),
@@ -111,6 +119,74 @@ test("recursively rejects forbidden keys before unsupported-container handling",
       new RegExp(key),
     );
   }
+});
+
+test("rejects hidden, symbolic, accessor, and prototype-based record surfaces without invoking getters", () => {
+  const hiddenForbidden = cloneValid();
+  Object.defineProperty(hiddenForbidden, "secret", {
+    value: "HIDDEN_SECRET_SENTINEL",
+    enumerable: false,
+  });
+  assert.throws(() => assertScoreRecord(hiddenForbidden), /secret/);
+
+  const hiddenUnsupported = cloneValid();
+  Object.defineProperty(hiddenUnsupported, "unexpectedHidden", {
+    value: true,
+    enumerable: false,
+  });
+  assert.throws(() => assertScoreRecord(hiddenUnsupported), /unexpectedHidden/);
+
+  const nested = {};
+  Object.defineProperty(nested, "prompt", {
+    value: "HIDDEN_PROMPT_SENTINEL",
+    enumerable: false,
+  });
+  assert.throws(() => assertScoreRecord(cloneValid({ metadata: nested })), /prompt/);
+
+  const symbol = Symbol("SYMBOL_SENTINEL");
+  const symbolic = cloneValid();
+  Object.defineProperty(symbolic, symbol, { value: true, enumerable: false });
+  assert.throws(
+    () => assertScoreRecord(symbolic),
+    (error: unknown) =>
+      error instanceof Error && /unsupportedKey/.test(error.message) && !error.message.includes("SENTINEL"),
+  );
+
+  const nestedSymbolic = { ordinary: true };
+  Object.defineProperty(nestedSymbolic, Symbol("NESTED_SYMBOL_SENTINEL"), {
+    value: true,
+    enumerable: false,
+  });
+  assert.throws(
+    () => assertScoreRecord(cloneValid({ metadata: nestedSymbolic })),
+    (error: unknown) =>
+      error instanceof Error && /unsupportedKey/.test(error.message) && !error.message.includes("SENTINEL"),
+  );
+
+  let getterCalled = false;
+  const accessor = cloneValid();
+  Object.defineProperty(accessor, "outputId", {
+    get() {
+      getterCalled = true;
+      return valid.outputId;
+    },
+    enumerable: true,
+    configurable: true,
+  });
+  assert.throws(() => assertScoreRecord(accessor), /outputId/);
+  assert.equal(getterCalled, false);
+
+  const nonstandardDescriptor = cloneValid();
+  Object.defineProperty(nonstandardDescriptor, "outputId", {
+    value: valid.outputId,
+    enumerable: true,
+    writable: false,
+    configurable: true,
+  });
+  assert.throws(() => assertScoreRecord(nonstandardDescriptor), /outputId/);
+
+  const customPrototype = Object.assign(Object.create({ inherited: true }), valid);
+  assert.throws(() => assertScoreRecord(customPrototype), /record/);
 });
 
 test("enforces fixed participant, workflow, and model domains plus non-empty string identifiers", () => {
@@ -170,6 +246,42 @@ test("enforces finite non-negative numeric telemetry and accepts fractions", () 
     }
     assert.doesNotThrow(() => assertScoreRecord(cloneValid({ [field]: 1.5 })));
   }
+
+  assert.doesNotThrow(() => assertScoreRecord(cloneValid({ costUsd: 0.000001 })));
+  assert.throws(() => assertScoreRecord(cloneValid({ costUsd: 0.0000015 })), /costUsd/);
+  assert.throws(() => assertScoreRecord(cloneValid({ costUsd: Number.MAX_VALUE })), /costUsd/);
+});
+
+test("uses exact integer microdollars for both reporting and the 45 dollar gate", () => {
+  const exactlyAtGate = completeSample((record) => {
+    record.costUsd = 3;
+  });
+  const passing = summarizeScoreRecords(exactlyAtGate);
+  assert.equal(passing.totalCostUsd, 45);
+  assert.equal(passing.pass, true);
+
+  const oneMicrodollarOver = completeSample((record) => {
+    record.costUsd = 3;
+  });
+  oneMicrodollarOver[0]!.costUsd = 3.000001;
+  const failing = summarizeScoreRecords(oneMicrodollarOver);
+  assert.equal(failing.totalCostUsd, 45.000001);
+  assert.equal(failing.pass, false);
+});
+
+test("rejects empty aggregates and exact-microdollar aggregate overflow without null or Infinity", () => {
+  assert.throws(() => summarizeScoreRecords([]), /sampleSize/);
+
+  const overflow = completeSample((record, index) => {
+    record.costUsd = index < 3 ? 4_000_000_000 : 0;
+  });
+  assert.throws(
+    () => summarizeScoreRecords(overflow),
+    (error: unknown) => error instanceof Error && error.message === "Invalid score record field: totalCostUsd",
+  );
+
+  const serialized = JSON.stringify(summarizeScoreRecords(completeSample()));
+  assert.doesNotMatch(serialized, /null|Infinity/);
 });
 
 test("summarizes only aggregate fields and passes a complete required sample", () => {
@@ -257,7 +369,7 @@ test("fails each disclosure, quality, latency, cost, and incident threshold inde
       for (let index = 0; index < 8; index += 1) records[index]!.elapsedMs = 90_001;
     },
     (records) => {
-      records[0]!.costUsd = 45.0000001;
+      records[0]!.costUsd = 44.720001;
     },
     (records) => {
       records[0]!.incidentCategory = "quality-anomaly";
@@ -271,20 +383,20 @@ test("fails each disclosure, quality, latency, cost, and incident threshold inde
   }
 });
 
-test("computes even medians for an incomplete unique sample and rounds cost to six places", () => {
+test("computes even medians for an incomplete unique sample and exact microdollar cost", () => {
   const records = completeSample().slice(0, 14);
   records[0]!.usefulness = 3;
   records[13]!.usefulness = 5;
   records[0]!.elapsedMs = 44_998;
   records[13]!.elapsedMs = 45_002;
-  records[0]!.costUsd = 0.0000019;
-  records[1]!.costUsd = 0.0000019;
+  records[0]!.costUsd = 0.000001;
+  records[1]!.costUsd = 0.000001;
 
   const summary = summarizeScoreRecords(records);
   assert.equal(summary.medianUsefulness, 4);
   assert.equal(summary.medianFactualConsistency, 5);
   assert.equal(summary.medianElapsedMs, 45000);
-  assert.equal(summary.totalCostUsd, 0.240004);
+  assert.equal(summary.totalCostUsd, 0.240002);
   assert.equal(summary.pass, false);
 });
 
@@ -301,6 +413,51 @@ test("reads non-empty JSONL lines and never logs or exposes record bodies", () =
   assert.throws(
     () => readScoreLedger(path),
     (error: unknown) => error instanceof Error && !error.message.includes(sentinel),
+  );
+});
+
+test("reads only bounded regular non-symlink ledgers and sanitizes all file errors", () => {
+  const target = writeLedger(completeSample());
+  const link = `${target}.link`;
+  symlinkSync(target, link);
+
+  for (const path of [link, target.slice(0, target.lastIndexOf("/"))]) {
+    assert.throws(
+      () => readScoreLedger(path),
+      (error: unknown) => error instanceof Error && !error.message.includes(path),
+    );
+  }
+
+  const fileSentinel = "OVERSIZED_FILE_BODY_SENTINEL";
+  const oversizedFile = writeRawLedger(fileSentinel.repeat(16_384), `${fileSentinel}.jsonl`).path;
+  assert.throws(
+    () => readScoreLedger(oversizedFile),
+    (error: unknown) =>
+      error instanceof Error &&
+      /fileBytes/.test(error.message) &&
+      !error.message.includes(fileSentinel) &&
+      !error.message.includes(oversizedFile),
+  );
+
+  const lineSentinel = "OVERSIZED_LINE_BODY_SENTINEL";
+  const oversizedLine = writeRawLedger(
+    `${JSON.stringify({ ...valid, outputId: lineSentinel.repeat(1_024) })}\n`,
+    `${lineSentinel}.jsonl`,
+  ).path;
+  assert.throws(
+    () => readScoreLedger(oversizedLine),
+    (error: unknown) =>
+      error instanceof Error &&
+      /lineBytes/.test(error.message) &&
+      !error.message.includes(lineSentinel) &&
+      !error.message.includes(oversizedLine),
+  );
+
+  const sixteenRecords = writeLedger([...completeSample(), { ...valid, outputId: "sixteenth-record" }]);
+  assert.throws(
+    () => readScoreLedger(sixteenRecords),
+    (error: unknown) =>
+      error instanceof Error && /sampleSize/.test(error.message) && !error.message.includes(sixteenRecords),
   );
 });
 
