@@ -89,7 +89,7 @@ Every operational QM block below re-verifies the repository-local install immedi
 
 H0 may establish the dedicated, capped provider project and revocable pilot SMTP grant. It must not create Fly resources, upload deployment secrets, or make billable model calls.
 
-At H0, leave `FLY_SANDBOX_API_TOKEN` unset. Before setup, use a secure local editor configured without swap, backup, history, or cloud synchronization to populate every value required by the H0 setup, explicitly including both `ADMIN_GRANTS` and `AUTH_ALLOWED_EMAILS`, directly in the private `.env` before setup. The two identity lists are independent: setup is validation-only and must not derive one identity list from the other.
+At H0, leave `FLY_SANDBOX_API_TOKEN` unset. Use a secure local editor configured without swap, backup, history, terminal echo, or cloud synchronization to populate every H0-available value directly in the private `.env`, explicitly including both `ADMIN_GRANTS` and `AUTH_ALLOWED_EMAILS`. The two identity lists are independent and the operator must not derive one identity list from the other. Setup is explicitly deferred until H1. H0 must not run `qm setup`: the pinned command can silently prompt for the intentionally absent sandbox token and exit successfully after a skip, which is not valid H0 evidence.
 
 ```bash
 REPO_ROOT="$(git rev-parse --show-toplevel)"
@@ -103,20 +103,13 @@ chmod 600 "$HOSTED_ROOT/.env"
 git -C "$REPO_ROOT" check-ignore --quiet deploy/layers/alpha-ticker-stage-a-hosted/.env
 node "$REPO_ROOT/scripts/alpha-ticker-stage-a-hosted/activation-record.mjs" \
   --verify-qm-install --root "$HOSTED_ROOT"
-cd "$HOSTED_ROOT"
-if ! "$QM_BIN" setup >/dev/null 2>&1; then
-  printf '%s\n' 'qm-setup-validation-failed' >&2
-  exit 1
-fi
-chmod 600 "$HOSTED_ROOT/.env"
-git -C "$REPO_ROOT" check-ignore --quiet deploy/layers/alpha-ticker-stage-a-hosted/.env
 cd "$REPO_ROOT"
 node scripts/alpha-ticker-stage-a-hosted/activation-record.mjs \
   --input .generated/alpha-ticker-stage-a-hosted/activation.json
 bash scripts/alpha-ticker-stage-a-hosted/preflight.sh
 ```
 
-Identity output may never be retained in terminal capture, logs, evidence, shell history, or committed files. The setup process requires an interactive TTY, so stdin remains attached to the terminal; stdout and stderr are discarded and are not retained. Because every H0-required value is complete before invocation, no prompts or identity derivation are expected. The guarded command does not hide failure: it emits only the fixed `qm-setup-validation-failed` marker and stops. The suppressed setup command must validate the directly supplied values without printing, rewriting, or deriving either identity list; if the pinned command cannot do that, stop H0. The expected preflight final line is `hosted-preflight: pass`. A name collision, unavailable `jnb`, failed hard US$50 provider control, retention gap, runtime mismatch, dirty tracked tree, boundary failure, or unexpected QM plan result stops H0. Do not continue to H1 unless preflight passes.
+Identity output may never be retained in terminal capture, logs, evidence, shell history, or committed files. H0 runs only the guarded activation-record and preflight/static checks shown above; it performs no interactive QM setup. The expected preflight final line is `hosted-preflight: pass`. A name collision, unavailable `jnb`, failed hard US$50 provider control, retention gap, runtime mismatch, dirty tracked tree, boundary failure, or unexpected QM plan result stops H0. Do not continue to H1 unless preflight passes.
 
 ### Gate H1: Egress And Immutable Sandbox
 
@@ -155,16 +148,32 @@ fly apps create alpha-ticker-stage-a-hosted-sandboxes --org personal
 
 Pause again before setup or publication. Append only the newly created sandbox app to the approved `apps` list, re-run the mode-`0600` and ignore checks, and leave `sandboxRegistry` null until publication returns its separate immutable registry identifier. After publication, capture that registry identifier before planning. A partial inventory may contain only resources confirmed to exist; it must never contain placeholders or expected-but-uncreated resources.
 
-Run `"$QM_BIN" setup` a second time and add only the missing `FLY_SANDBOX_API_TOKEN`. Reassert mode and ignore protections, verify the pinned installation again, then publish and plan:
+Enter `FLY_SANDBOX_API_TOKEN` directly into the existing `.env` with a secure in-place local editor; do not pass its value in a command, shell history, or terminal output. Reassert the same inode, mode, and ignore protections. Run guarded interactive local QM setup only after the sandbox token is present and all required values are complete. During setup, stdin remains attached to the terminal TTY while stdout and stderr are suppressed; no prompt or identity derivation is expected. A failure emits only the fixed marker and stops. Then run `qm check`, publish, and plan:
 
 ```bash
 cd "$HOSTED_ROOT"
 "${EDITOR:?set EDITOR to a secure local inventory editor}" "$INVENTORY_PATH"
 chmod 600 "$INVENTORY_PATH"
 git -C "$REPO_ROOT" check-ignore --quiet .generated/alpha-ticker-stage-a-hosted/resource-inventory.json
+ENV_PATH="$HOSTED_ROOT/.env"
+test -f "$ENV_PATH"
+test ! -L "$ENV_PATH"
+chmod 600 "$ENV_PATH"
+git -C "$REPO_ROOT" check-ignore --quiet deploy/layers/alpha-ticker-stage-a-hosted/.env
+ENV_DEVICE_INODE_BEFORE="$(stat -f '%d:%i' "$ENV_PATH")"
+umask 077
+"${EDITOR:?set EDITOR to a secure in-place local editor}" "$ENV_PATH"
+test -f "$ENV_PATH"
+test ! -L "$ENV_PATH"
+test "$(stat -f '%d:%i' "$ENV_PATH")" = "$ENV_DEVICE_INODE_BEFORE"
+test "$(stat -f '%Lp' "$ENV_PATH")" = "600"
+git -C "$REPO_ROOT" check-ignore --quiet deploy/layers/alpha-ticker-stage-a-hosted/.env
 node "$REPO_ROOT/scripts/alpha-ticker-stage-a-hosted/activation-record.mjs" \
   --verify-qm-install --root "$HOSTED_ROOT"
-"$QM_BIN" setup
+if ! "$QM_BIN" setup >/dev/null 2>&1; then
+  printf '%s\n' 'qm-setup-validation-failed' >&2
+  exit 1
+fi
 chmod 600 "$HOSTED_ROOT/.env"
 git -C "$REPO_ROOT" check-ignore --quiet deploy/layers/alpha-ticker-stage-a-hosted/.env
 node "$REPO_ROOT/scripts/alpha-ticker-stage-a-hosted/activation-record.mjs" \
@@ -182,481 +191,106 @@ The egress probe must first complete its silent authenticated positive canary, t
 
 ### Gate H2: Controlled Deployment
 
-Push secrets through the verified repository-local QM executable, review the plan, deploy the minimum service set, and run live checks. The reconciliation function below captures the organization-scoped Fly inventory to a private ignored snapshot, strictly validates it, and atomically merges only the seven approved app identities into the private resource inventory. It preserves every previously captured immutable ID and fails closed on malformed data, duplicates, unknown approved-name collisions, or immutable-ID mismatch.
+Push secrets through the verified repository-local QM executable, review the plan, deploy the minimum service set, and run live checks. The committed reconciler is the only H2/H3 inventory mutation path. It queries Fly apps, Managed Postgres, and Tigris without retaining raw provider snapshots, preserves captured immutable identifiers, and atomically advances the exact `"h2ResourceReconciliation"` field. The committed parser follows Fly's real application JSON shape and requires `Organization.Slug` to equal `personal`.
+
+#### Deployment lifecycle wrapper
+
+Initialize this definitions-only wrapper in the approved operator shell before any H2 or H3 deployment. Re-run this block after opening a fresh shell. It performs no cloud mutation until called.
 
 ```bash
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 HOSTED_ROOT="$REPO_ROOT/deploy/layers/alpha-ticker-stage-a-hosted"
 QM_BIN="$HOSTED_ROOT/node_modules/.bin/qm"
-RECONCILE_ROOT="$REPO_ROOT/.generated/alpha-ticker-stage-a-hosted"
-INVENTORY_PATH="$RECONCILE_ROOT/resource-inventory.json"
-H2_DATA_RECONCILIATION="$RECONCILE_ROOT/h2-data-reconciliation.private.json"
-mkdir -p "$RECONCILE_ROOT"
-chmod 700 "$RECONCILE_ROOT"
+INVENTORY_PATH="$REPO_ROOT/.generated/alpha-ticker-stage-a-hosted/resource-inventory.json"
+RECONCILER="$REPO_ROOT/scripts/alpha-ticker-stage-a-hosted/reconcile-resources.mjs"
+test -f "$INVENTORY_PATH"
+test ! -L "$INVENTORY_PATH"
+test "$(stat -f '%Lp' "$INVENTORY_PATH")" = "600"
 git -C "$REPO_ROOT" check-ignore --quiet .generated/alpha-ticker-stage-a-hosted/resource-inventory.json
-
-reconcile_hosted_apps() {
-  FLY_APPS_SNAPSHOT="$(mktemp "$RECONCILE_ROOT/fly-apps.XXXXXX.json")" || return 1
-  chmod 600 "$FLY_APPS_SNAPSHOT" || return 1
-  if ! fly apps list --org personal --json >"$FLY_APPS_SNAPSHOT" 2>/dev/null; then
-    rm -f -- "$FLY_APPS_SNAPSHOT"
-    printf '%s\n' 'fly-app-inventory-capture-failed' >&2
-    return 1
-  fi
-  export FLY_APPS_SNAPSHOT INVENTORY_PATH
-  RECONCILE_NODE_STATUS=0
-  node --input-type=module <<'NODE' || RECONCILE_NODE_STATUS=$?
-import {
-  chmodSync,
-  existsSync,
-  lstatSync,
-  readFileSync,
-  renameSync,
-  writeFileSync,
-} from "node:fs";
-
-const approvedNames = [
-  "alpha-ticker-stage-a-hosted-core",
-  "alpha-ticker-stage-a-hosted-web-ui",
-  "alpha-ticker-stage-a-hosted-admin",
-  "alpha-ticker-stage-a-hosted-portal",
-  "alpha-ticker-stage-a-hosted-auth",
-  "alpha-ticker-stage-a-hosted-sandboxes",
-  "alpha-ticker-stage-a-egress",
-];
-const approved = new Set(approvedNames);
-const idPattern = /^[A-Za-z0-9._:-]{1,255}$/;
-const exactKeys = (value, keys, message) => {
-  if (
-    typeof value !== "object" ||
-    value === null ||
-    Array.isArray(value) ||
-    Object.keys(value).sort().join("\0") !== [...keys].sort().join("\0")
-  ) {
-    throw new Error(message);
-  }
-};
-const validatePrivateFile = (path, message) => {
-  const stat = lstatSync(path);
-  if (stat.isSymbolicLink() || !stat.isFile() || (stat.mode & 0o777) !== 0o600 || stat.size > 1_048_576) {
-    throw new Error(message);
-  }
-};
-const validateEntry = (entry, expectedName, knownIds) => {
-  exactKeys(entry, ["name", "id"], "resource inventory entry malformed");
-  if (entry.name !== expectedName || typeof entry.id !== "string" || !idPattern.test(entry.id)) {
-    throw new Error("resource inventory entry malformed");
-  }
-  if (knownIds.has(entry.id)) throw new Error("duplicate Fly app identity refused");
-  knownIds.add(entry.id);
-};
-
-const snapshotPath = process.env.FLY_APPS_SNAPSHOT;
-const inventoryPath = process.env.INVENTORY_PATH;
-if (!snapshotPath || !inventoryPath) throw new Error("reconciliation path missing");
-validatePrivateFile(snapshotPath, "Fly app snapshot malformed");
-const snapshot = JSON.parse(readFileSync(snapshotPath, "utf8"));
-if (!Array.isArray(snapshot) || snapshot.length > 10_000) throw new Error("Fly app snapshot malformed");
-
-const discovered = new Map();
-const snapshotIds = new Map();
-for (const entry of snapshot) {
-  if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
-    throw new Error("Fly app snapshot malformed");
-  }
-  if (
-    typeof entry.ID !== "string" ||
-    typeof entry.Name !== "string" ||
-    typeof entry.Organization !== "string" ||
-    !idPattern.test(entry.ID)
-  ) {
-    throw new Error("Fly app snapshot malformed");
-  }
-  if (snapshotIds.has(entry.ID) && snapshotIds.get(entry.ID) !== entry.Name) {
-    throw new Error("unknown approved-name collision refused");
-  }
-  snapshotIds.set(entry.ID, entry.Name);
-  if (!approved.has(entry.Name)) continue;
-  if (entry.Organization !== "personal") throw new Error("unknown approved-name collision refused");
-  if (discovered.has(entry.Name)) throw new Error("duplicate Fly app identity refused");
-  discovered.set(entry.Name, entry.ID);
-}
-
-if (!existsSync(inventoryPath)) throw new Error("resource inventory missing");
-validatePrivateFile(inventoryPath, "resource inventory malformed");
-const inventory = JSON.parse(readFileSync(inventoryPath, "utf8"));
-exactKeys(
-  inventory,
-  [
-    "flyOrg",
-    "apps",
-    "managedPostgres",
-    "objectStorage",
-    "sandboxRegistry",
-    "h2ResourceReconciliation",
-  ],
-  "resource inventory malformed",
-);
-if (
-  inventory.flyOrg !== "personal" ||
-  !Array.isArray(inventory.apps) ||
-  inventory.h2ResourceReconciliation !== "unresolved"
-) {
-  throw new Error("resource inventory malformed");
-}
-
-const knownIds = new Set();
-const existingApps = new Map();
-for (const entry of inventory.apps) {
-  if (!entry || !approved.has(entry.name) || existingApps.has(entry.name)) {
-    throw new Error("unknown approved-name collision refused");
-  }
-  validateEntry(entry, entry.name, knownIds);
-  existingApps.set(entry.name, entry.id);
-}
-for (const [field, expectedName] of [
-  ["managedPostgres", "alpha-ticker-stage-a-hosted-pg"],
-  ["objectStorage", "alpha-ticker-stage-a-hosted-data"],
-  ["sandboxRegistry", "alpha-ticker-stage-a-hosted-sandboxes"],
-]) {
-  const entry = inventory[field];
-  if (entry !== null) validateEntry(entry, expectedName, knownIds);
-}
-for (const [id, name] of snapshotIds) {
-  if (knownIds.has(id) && existingApps.get(name) !== id) {
-    throw new Error("unknown approved-name collision refused");
-  }
-}
-for (const [name, id] of discovered) {
-  if (existingApps.has(name) && existingApps.get(name) !== id) {
-    throw new Error("immutable Fly app ID mismatch refused");
-  }
-  if (!existingApps.has(name) && knownIds.has(id)) {
-    throw new Error("unknown approved-name collision refused");
-  }
-  existingApps.set(name, id);
-  knownIds.add(id);
-}
-inventory.apps = approvedNames
-  .filter((name) => existingApps.has(name))
-  .map((name) => ({ name, id: existingApps.get(name) }));
-
-const temporary = `${inventoryPath}.reconcile.${process.pid}`;
-writeFileSync(temporary, `${JSON.stringify(inventory, null, 2)}\n`, { flag: "wx", mode: 0o600 });
-renameSync(temporary, inventoryPath);
-chmodSync(inventoryPath, 0o600);
-NODE
-  rm -f -- "$FLY_APPS_SNAPSHOT"
-  unset FLY_APPS_SNAPSHOT
-  if [ "$RECONCILE_NODE_STATUS" -ne 0 ]; then
-    printf '%s\n' 'hosted-app-reconciliation-refused' >&2
-    return 1
-  fi
-  chmod 600 "$INVENTORY_PATH"
-  git -C "$REPO_ROOT" check-ignore --quiet .generated/alpha-ticker-stage-a-hosted/resource-inventory.json
-}
-
-capture_hosted_data_snapshots() {
-  MPG_SNAPSHOT_TEMP="$RECONCILE_ROOT/managed-postgres-list.private.json.$$"
-  MPG_SNAPSHOT="$RECONCILE_ROOT/managed-postgres-list.private.json"
-  TIGRIS_SNAPSHOT_TEMP="$RECONCILE_ROOT/tigris-storage-list.private.txt.$$"
-  TIGRIS_SNAPSHOT="$RECONCILE_ROOT/tigris-storage-list.private.txt"
-  umask 077
-  if ! fly mpg list --json --org personal >"$MPG_SNAPSHOT_TEMP" 2>/dev/null; then
-    rm -f -- "$MPG_SNAPSHOT_TEMP" "$TIGRIS_SNAPSHOT_TEMP"
-    return 1
-  fi
-  chmod 600 "$MPG_SNAPSHOT_TEMP"
-  if ! fly storage list --org personal >"$TIGRIS_SNAPSHOT_TEMP" 2>/dev/null; then
-    rm -f -- "$MPG_SNAPSHOT_TEMP" "$TIGRIS_SNAPSHOT_TEMP"
-    return 1
-  fi
-  chmod 600 "$TIGRIS_SNAPSHOT_TEMP"
-  mv -f -- "$MPG_SNAPSHOT_TEMP" "$MPG_SNAPSHOT"
-  mv -f -- "$TIGRIS_SNAPSHOT_TEMP" "$TIGRIS_SNAPSHOT"
-  chmod 600 "$MPG_SNAPSHOT" "$TIGRIS_SNAPSHOT"
-  git -C "$REPO_ROOT" check-ignore --quiet .generated/alpha-ticker-stage-a-hosted/managed-postgres-list.private.json
-  git -C "$REPO_ROOT" check-ignore --quiet .generated/alpha-ticker-stage-a-hosted/tigris-storage-list.private.txt
-}
-
-prepare_h2_data_reconciliation_input() {
-  export INVENTORY_PATH H2_DATA_RECONCILIATION
-  node --input-type=module <<'NODE'
-import { lstatSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-
-const inventoryPath = process.env.INVENTORY_PATH;
-const outputPath = process.env.H2_DATA_RECONCILIATION;
-if (!inventoryPath || !outputPath) throw new Error("data reconciliation path missing");
-const inventoryStat = lstatSync(inventoryPath);
-if (
-  inventoryStat.isSymbolicLink() ||
-  !inventoryStat.isFile() ||
-  (inventoryStat.mode & 0o777) !== 0o600 ||
-  inventoryStat.size > 1_048_576
-) {
-  throw new Error("data reconciliation preparation refused");
-}
-const inventory = JSON.parse(readFileSync(inventoryPath, "utf8"));
-if (inventory.h2ResourceReconciliation !== "unresolved") {
-  throw new Error("data reconciliation preparation refused");
-}
-const value = {
-  managedPostgres: inventory.managedPostgres,
-  objectStorage: inventory.objectStorage,
-};
-const temporary = `${outputPath}.prepare.${process.pid}`;
-writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { flag: "wx", mode: 0o600 });
-renameSync(temporary, outputPath);
-NODE
-  chmod 600 "$H2_DATA_RECONCILIATION"
-  git -C "$REPO_ROOT" check-ignore --quiet \
-    .generated/alpha-ticker-stage-a-hosted/h2-data-reconciliation.private.json
-}
-
-transition_h2_resource_reconciliation() {
-  export INVENTORY_PATH H2_DATA_RECONCILIATION MPG_SNAPSHOT TIGRIS_SNAPSHOT
-  export H2_ALLOWED_STATES H2_NEXT_STATE H2_REQUIRE_SNAPSHOTS
-  node --input-type=module <<'NODE'
-import { chmodSync, lstatSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-
-const inventoryPath = process.env.INVENTORY_PATH;
-const allowedStates = new Set((process.env.H2_ALLOWED_STATES ?? "").split(",").filter(Boolean));
-const nextState = process.env.H2_NEXT_STATE;
-const requireSnapshots = process.env.H2_REQUIRE_SNAPSHOTS === "1";
-const idPattern = /^[A-Za-z0-9._:-]{1,255}$/;
-const approvedApps = new Set([
-  "alpha-ticker-stage-a-hosted-core",
-  "alpha-ticker-stage-a-hosted-web-ui",
-  "alpha-ticker-stage-a-hosted-admin",
-  "alpha-ticker-stage-a-hosted-portal",
-  "alpha-ticker-stage-a-hosted-auth",
-  "alpha-ticker-stage-a-hosted-sandboxes",
-  "alpha-ticker-stage-a-egress",
-]);
-const exactKeys = (value, keys, message) => {
-  if (
-    typeof value !== "object" ||
-    value === null ||
-    Array.isArray(value) ||
-    Object.keys(value).sort().join("\0") !== [...keys].sort().join("\0")
-  ) {
-    throw new Error(message);
-  }
-};
-const validatePrivateFile = (path, message) => {
-  if (!path) throw new Error(message);
-  const stat = lstatSync(path);
-  if (stat.isSymbolicLink() || !stat.isFile() || (stat.mode & 0o777) !== 0o600 || stat.size > 1_048_576) {
-    throw new Error(message);
-  }
-};
-
-validatePrivateFile(inventoryPath, "resource inventory lifecycle transition refused");
-const inventory = JSON.parse(readFileSync(inventoryPath, "utf8"));
-exactKeys(
-  inventory,
-  [
-    "flyOrg",
-    "apps",
-    "managedPostgres",
-    "objectStorage",
-    "sandboxRegistry",
-    "h2ResourceReconciliation",
-  ],
-  "resource inventory lifecycle transition refused",
-);
-if (
-  inventory.flyOrg !== "personal" ||
-  !Array.isArray(inventory.apps) ||
-  !allowedStates.has(inventory.h2ResourceReconciliation) ||
-  !(
-    (nextState === "unresolved" && !requireSnapshots) ||
-    (nextState === "complete" && requireSnapshots && inventory.h2ResourceReconciliation === "unresolved")
-  )
-) {
-  throw new Error("resource inventory lifecycle transition refused");
-}
-
-const ids = new Set();
-const names = new Set();
-const validateEntry = (entry, expectedName) => {
-  exactKeys(entry, ["name", "id"], "resource inventory lifecycle transition refused");
-  if (entry.name !== expectedName || typeof entry.id !== "string" || !idPattern.test(entry.id)) {
-    throw new Error("resource inventory lifecycle transition refused");
-  }
-  if (ids.has(entry.id)) throw new Error("resource inventory lifecycle transition refused");
-  ids.add(entry.id);
-};
-for (const entry of inventory.apps) {
-  if (!entry || !approvedApps.has(entry.name) || names.has(entry.name)) {
-    throw new Error("resource inventory lifecycle transition refused");
-  }
-  validateEntry(entry, entry.name);
-  names.add(entry.name);
-}
-for (const [field, expectedName] of [
-  ["managedPostgres", "alpha-ticker-stage-a-hosted-pg"],
-  ["objectStorage", "alpha-ticker-stage-a-hosted-data"],
-  ["sandboxRegistry", "alpha-ticker-stage-a-hosted-sandboxes"],
-]) {
-  if (inventory[field] !== null) validateEntry(inventory[field], expectedName);
-}
-if (requireSnapshots) {
-  validatePrivateFile(process.env.MPG_SNAPSHOT, "resource inventory lifecycle transition refused");
-  validatePrivateFile(process.env.TIGRIS_SNAPSHOT, "resource inventory lifecycle transition refused");
-  validatePrivateFile(process.env.H2_DATA_RECONCILIATION, "resource inventory lifecycle transition refused");
-  const reconciliation = JSON.parse(readFileSync(process.env.H2_DATA_RECONCILIATION, "utf8"));
-  exactKeys(
-    reconciliation,
-    ["managedPostgres", "objectStorage"],
-    "resource inventory lifecycle transition refused",
-  );
-  const inputIds = new Set();
-  for (const [field, expectedName] of [
-    ["managedPostgres", "alpha-ticker-stage-a-hosted-pg"],
-    ["objectStorage", "alpha-ticker-stage-a-hosted-data"],
-  ]) {
-    const existing = inventory[field];
-    const candidate = reconciliation[field];
-    if (candidate !== null) {
-      exactKeys(candidate, ["name", "id"], "resource inventory lifecycle transition refused");
-      if (candidate.name !== expectedName || typeof candidate.id !== "string" || !idPattern.test(candidate.id)) {
-        throw new Error("resource inventory lifecycle transition refused");
-      }
-      if (inputIds.has(candidate.id)) throw new Error("resource inventory lifecycle transition refused");
-      inputIds.add(candidate.id);
-    }
-    if (
-      existing !== null &&
-      (candidate === null || candidate.name !== existing.name || candidate.id !== existing.id)
-    ) {
-      throw new Error("resource inventory lifecycle transition refused");
-    }
-    if (existing === null && candidate !== null && ids.has(candidate.id)) {
-      throw new Error("resource inventory lifecycle transition refused");
-    }
-    inventory[field] = candidate;
-    if (candidate !== null) ids.add(candidate.id);
-  }
-}
-
-inventory.h2ResourceReconciliation = nextState;
-const temporary = `${inventoryPath}.lifecycle.${process.pid}`;
-writeFileSync(temporary, `${JSON.stringify(inventory, null, 2)}\n`, { flag: "wx", mode: 0o600 });
-renameSync(temporary, inventoryPath);
-chmodSync(inventoryPath, 0o600);
-NODE
-}
-
-mark_h2_resources_unresolved() {
-  H2_ALLOWED_STATES="not-started,complete"
-  H2_NEXT_STATE="unresolved"
-  H2_REQUIRE_SNAPSHOTS="0"
-  transition_h2_resource_reconciliation
-  H2_TRANSITION_STATUS=$?
-  unset H2_ALLOWED_STATES H2_NEXT_STATE H2_REQUIRE_SNAPSHOTS
-  return "$H2_TRANSITION_STATUS"
-}
-
-complete_h2_resource_reconciliation() {
-  H2_ALLOWED_STATES="unresolved"
-  H2_NEXT_STATE="complete"
-  H2_REQUIRE_SNAPSHOTS="1"
-  transition_h2_resource_reconciliation
-  H2_TRANSITION_STATUS=$?
-  unset H2_ALLOWED_STATES H2_NEXT_STATE H2_REQUIRE_SNAPSHOTS
-  return "$H2_TRANSITION_STATUS"
-}
-
 node "$REPO_ROOT/scripts/alpha-ticker-stage-a-hosted/activation-record.mjs" \
   --verify-qm-install --root "$HOSTED_ROOT"
-cd "$HOSTED_ROOT"
-"$QM_BIN" secrets push
-"$QM_BIN" plan
-mark_h2_resources_unresolved
-H2_MARK_STATUS=$?
-if [ "$H2_MARK_STATUS" -ne 0 ]; then
-  printf '%s\n' 'h2-resource-lifecycle-unresolved-transition-failed' >&2
-  exit 1
-fi
-UP_STATUS=0
-"$QM_BIN" up || UP_STATUS=$?
-reconcile_hosted_apps
-RECONCILE_STATUS=$?
-capture_hosted_data_snapshots
-DATA_SNAPSHOT_STATUS=$?
-if [ "$RECONCILE_STATUS" -ne 0 ] || [ "$DATA_SNAPSHOT_STATUS" -ne 0 ]; then
-  printf '%s\n' 'post-up-private-inventory-reconciliation-failed' >&2
-  exit 1
-fi
-prepare_h2_data_reconciliation_input
-H2_DATA_PREPARE_STATUS=$?
-if [ "$H2_DATA_PREPARE_STATUS" -ne 0 ]; then
-  printf '%s\n' 'h2-data-reconciliation-input-preparation-failed' >&2
-  exit 1
-fi
-"${EDITOR:?set EDITOR to a secure local inventory editor}" \
-  "$MPG_SNAPSHOT" "$TIGRIS_SNAPSHOT" "$H2_DATA_RECONCILIATION"
-chmod 600 "$MPG_SNAPSHOT" "$TIGRIS_SNAPSHOT" "$H2_DATA_RECONCILIATION" "$INVENTORY_PATH"
-git -C "$REPO_ROOT" check-ignore --quiet .generated/alpha-ticker-stage-a-hosted/resource-inventory.json
-complete_h2_resource_reconciliation
-H2_COMPLETE_STATUS=$?
-if [ "$H2_COMPLETE_STATUS" -ne 0 ]; then
-  printf '%s\n' 'h2-resource-lifecycle-completion-failed' >&2
-  exit 1
-fi
-if [ "$UP_STATUS" -ne 0 ]; then
-  printf '%s\n' 'qm-up-failed-after-inventory-reconciliation' >&2
-  exit "$UP_STATUS"
-fi
-"$QM_BIN" doctor
-"$QM_BIN" check --live
-"$QM_BIN" conformance
-mark_h2_resources_unresolved
-H2_MARK_STATUS=$?
-if [ "$H2_MARK_STATUS" -ne 0 ]; then
-  printf '%s\n' 'h2-resource-lifecycle-unresolved-transition-failed' >&2
-  exit 1
-fi
-UP_STATUS=0
-"$QM_BIN" up || UP_STATUS=$?
-reconcile_hosted_apps
-RECONCILE_STATUS=$?
-capture_hosted_data_snapshots
-DATA_SNAPSHOT_STATUS=$?
-if [ "$RECONCILE_STATUS" -ne 0 ] || [ "$DATA_SNAPSHOT_STATUS" -ne 0 ]; then
-  printf '%s\n' 'post-up-private-inventory-reconciliation-failed' >&2
-  exit 1
-fi
-prepare_h2_data_reconciliation_input
-H2_DATA_PREPARE_STATUS=$?
-if [ "$H2_DATA_PREPARE_STATUS" -ne 0 ]; then
-  printf '%s\n' 'h2-data-reconciliation-input-preparation-failed' >&2
-  exit 1
-fi
-"${EDITOR:?set EDITOR to a secure local inventory editor}" \
-  "$MPG_SNAPSHOT" "$TIGRIS_SNAPSHOT" "$H2_DATA_RECONCILIATION"
-chmod 600 "$MPG_SNAPSHOT" "$TIGRIS_SNAPSHOT" "$H2_DATA_RECONCILIATION" "$INVENTORY_PATH"
-git -C "$REPO_ROOT" check-ignore --quiet .generated/alpha-ticker-stage-a-hosted/resource-inventory.json
-complete_h2_resource_reconciliation
-H2_COMPLETE_STATUS=$?
-if [ "$H2_COMPLETE_STATUS" -ne 0 ]; then
-  printf '%s\n' 'h2-resource-lifecycle-completion-failed' >&2
-  exit 1
-fi
-if [ "$UP_STATUS" -ne 0 ]; then
-  printf '%s\n' 'qm-up-failed-after-inventory-reconciliation' >&2
-  exit "$UP_STATUS"
-fi
-"$QM_BIN" check --live
-"$QM_BIN" status
+
+run_reconciled_qm_up() {
+  if ! "$RECONCILER" --begin --inventory "$INVENTORY_PATH" >/dev/null; then
+    printf '%s\n' 'resource-reconciliation-begin-failed' >&2
+    return 1
+  fi
+  QM_UP_STATUS=0
+  "$QM_BIN" up "$@" || QM_UP_STATUS=$?
+  RECONCILE_STATUS=0
+  "$RECONCILER" --reconcile --inventory "$INVENTORY_PATH" >/dev/null || RECONCILE_STATUS=$?
+  if [ "$RECONCILE_STATUS" -ne 0 ]; then
+    printf '%s\n' 'resource-reconciliation-failed-after-qm-up' >&2
+    return 1
+  fi
+  if [ "$QM_UP_STATUS" -ne 0 ]; then
+    printf '%s\n' 'qm-up-failed-after-resource-reconciliation' >&2
+    return "$QM_UP_STATUS"
+  fi
+}
 ```
 
-Immediately before each guarded `qm up`, atomically transition `h2ResourceReconciliation` from `not-started` or `complete` to `unresolved`. Both guarded `up` sequences then invoke exact app reconciliation and private Managed Postgres/Tigris queries immediately after `qm up`, whether that command succeeds or fails. On any provider-query, parsing, immutable-ID, mode, ownership, or atomic-write failure, stop all mutation and leave `h2ResourceReconciliation` as `unresolved`.
+The wrapper invokes `--begin` immediately before `qm up`, captures the deployment status without skipping cleanup, and always invokes `--reconcile` immediately afterward. A reconciliation failure is interpreted first: leave `h2ResourceReconciliation` as `unresolved`, stop all further mutation, and block final teardown success. Only after reconciliation succeeds may the wrapper report the original `qm up` failure. This ordering inventories partial sequential creation before controlled teardown.
 
-Only when both provider queries succeed may the operator inspect the private snapshots with a secure local editor and record any newly created Managed Postgres `alpha-ticker-stage-a-hosted-pg` exact immutable identifier in the separate `h2-data-reconciliation.private.json` input. Record Tigris `alpha-ticker-stage-a-hosted-data` there using its exact immutable identifier from the sponsor-controlled Fly dashboard, cross-checked against the private `fly storage list --org personal` snapshot; never use a display name as an ID. The operator never edits the lifecycle-bearing resource inventory directly. A `null` data field is valid in the separate input only when that successful provider query confirms the exact resource is absent. Preserve any already captured ID and refuse a mismatch. Keep the inventory, reconciliation input, and snapshots ignored and mode `0600`, and do not print their contents. The atomic completion helper validates and merges the separate input, then sets `h2ResourceReconciliation` to `complete` only after the app and both data-resource reconciliations pass. On `qm up` failure, perform the same reconciliation before controlled teardown; set `complete` only if all provider queries and exact reconciliation checks succeed. Otherwise it remains `unresolved`, and the teardown path must refuse final success.
+Run the two H2 deployment cycles through that wrapper only:
+
+```bash
+cd "$HOSTED_ROOT"
+if ! "$QM_BIN" secrets push; then
+  printf '%s\n' 'qm-secrets-push-failed' >&2
+  exit 1
+fi
+if ! "$QM_BIN" plan; then
+  printf '%s\n' 'qm-plan-failed' >&2
+  exit 1
+fi
+if ! run_reconciled_qm_up; then
+  exit 1
+fi
+if ! "$QM_BIN" doctor; then
+  exit 1
+fi
+if ! "$QM_BIN" check --live; then
+  exit 1
+fi
+if ! "$QM_BIN" conformance; then
+  exit 1
+fi
+if ! run_reconciled_qm_up; then
+  exit 1
+fi
+if ! "$QM_BIN" check --live; then
+  exit 1
+fi
+if ! "$QM_BIN" status; then
+  exit 1
+fi
+```
 
 The second deployment, live check, and status readback prove idempotency. Before the first participant turn, read back a durable organization sandbox allowlist containing exactly `alpha-ticker-stage-a-hosted-portal.fly.dev`. No external-data host is allowed. Confirm only `pi` and `gpt-5.6-terra` are selectable, connector providers are unconfigured, and browser, Slack, public-link, and publishing capabilities are absent.
+
+#### Fresh-shell recovery
+
+If a shell exits after `--begin` or `qm up` and the inventory is `unresolved`, do not repeat the deployment. In a fresh shell, verify the repository-local reconciler and inventory protections, then rerun only `--reconcile` without `--begin`. The operator must not run `qm up` again during recovery:
+
+```bash
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+HOSTED_ROOT="$REPO_ROOT/deploy/layers/alpha-ticker-stage-a-hosted"
+INVENTORY_PATH="$REPO_ROOT/.generated/alpha-ticker-stage-a-hosted/resource-inventory.json"
+RECONCILER="$REPO_ROOT/scripts/alpha-ticker-stage-a-hosted/reconcile-resources.mjs"
+test -f "$INVENTORY_PATH"
+test ! -L "$INVENTORY_PATH"
+test "$(stat -f '%Lp' "$INVENTORY_PATH")" = "600"
+git -C "$REPO_ROOT" check-ignore --quiet .generated/alpha-ticker-stage-a-hosted/resource-inventory.json
+node "$REPO_ROOT/scripts/alpha-ticker-stage-a-hosted/activation-record.mjs" \
+  --verify-qm-install --root "$HOSTED_ROOT"
+if ! "$RECONCILER" --reconcile --inventory "$INVENTORY_PATH" >/dev/null; then
+  printf '%s\n' 'fresh-shell-resource-reconciliation-failed' >&2
+  exit 1
+fi
+```
+
+A failed recovery must leave the lifecycle `unresolved` and stop. A successful recovery establishes exact provider state, including provider-confirmed absence when Managed Postgres or Tigris is `null`; proceed directly to controlled teardown if the interrupted deployment failed. No persistent raw provider snapshot, manual reconciliation input, or editor-maintained reconciliation artifact is created or retained.
 
 ### Gate H3: Safety Drills
 
@@ -670,46 +304,67 @@ curl -sS -o /dev/null -w '%{http_code}\n' https://example.com
 
 Expected output is exactly `403`. Any successful external fetch or different result stops the pilot.
 
-For the budget drill, freeze participant turns. The temporary brake is a one-field, reversible mutation of the tracked qconfig; do not use setup. **Pre-mutation boundary and policy checks** must pass while the committed value is `ORG_BUDGET_USD_PER_WINDOW=45`:
+For the budget drill, freeze participant turns. If this is a fresh H3 shell, first rerun the H2 definitions-only Deployment lifecycle wrapper; do not run a deployment during that initialization. The temporary brake is a one-field, reversible mutation of the tracked qconfig; do not use setup. Every mutation, check, and deployment below is guarded so a failure cannot be masked by a later command or permit a turn under the original US$45 limit. The temporary deployment state is `ORG_BUDGET_USD_PER_WINDOW=0`.
+
+**Pre-mutation boundary and policy checks** must pass while the committed value is `ORG_BUDGET_USD_PER_WINDOW=45`. Create a private byte-for-byte backup and pre-hash, install restoration traps, and atomically replace exactly one hardcoded `"ORG_BUDGET_USD_PER_WINDOW": "45"` with `"ORG_BUDGET_USD_PER_WINDOW": "0"`:
 
 ```bash
-REPO_ROOT="$(git rev-parse --show-toplevel)"
-HOSTED_ROOT="$REPO_ROOT/deploy/layers/alpha-ticker-stage-a-hosted"
-QM_BIN="$HOSTED_ROOT/node_modules/.bin/qm"
 QCONFIG="$HOSTED_ROOT/qm.config.jsonc"
 DRILL_ROOT="$REPO_ROOT/.generated/alpha-ticker-stage-a-hosted"
 mkdir -p "$DRILL_ROOT"
 chmod 700 "$DRILL_ROOT"
-node "$REPO_ROOT/scripts/alpha-ticker-stage-a-hosted/check-boundary.mjs"
-node --test "$REPO_ROOT/test/alpha-ticker-stage-a-hosted-policy.test.ts" \
-  "$REPO_ROOT/test/alpha-ticker-stage-a-hosted-boundary.test.ts"
-node "$REPO_ROOT/scripts/alpha-ticker-stage-a-hosted/activation-record.mjs" \
-  --verify-qm-install --root "$HOSTED_ROOT"
-```
+if [ "$(type -t run_reconciled_qm_up)" != "function" ]; then
+  printf '%s\n' 'deployment-lifecycle-wrapper-missing' >&2
+  exit 1
+fi
+if ! node "$REPO_ROOT/scripts/alpha-ticker-stage-a-hosted/check-boundary.mjs"; then
+  printf '%s\n' 'pre-budget-boundary-check-failed' >&2
+  exit 1
+fi
+if ! node --test "$REPO_ROOT/test/alpha-ticker-stage-a-hosted-policy.test.ts" \
+  "$REPO_ROOT/test/alpha-ticker-stage-a-hosted-boundary.test.ts"; then
+  printf '%s\n' 'pre-budget-policy-check-failed' >&2
+  exit 1
+fi
+if ! node "$REPO_ROOT/scripts/alpha-ticker-stage-a-hosted/activation-record.mjs" \
+  --verify-qm-install --root "$HOSTED_ROOT"; then
+  printf '%s\n' 'pre-budget-qm-verification-failed' >&2
+  exit 1
+fi
 
-Create a private byte-for-byte backup and pre-hash, install restoration traps, and replace exactly one hardcoded `"ORG_BUDGET_USD_PER_WINDOW": "45"` with `"ORG_BUDGET_USD_PER_WINDOW": "0"`. This is the temporary `ORG_BUDGET_USD_PER_WINDOW=0` deployment state. The mutation is atomic and prints no config content:
-
-```bash
-BUDGET_BACKUP="$(mktemp "$DRILL_ROOT/qconfig-budget.XXXXXX")"
-chmod 600 "$BUDGET_BACKUP"
-cp "$QCONFIG" "$BUDGET_BACKUP"
-QCONFIG_PRE_SHA256="$(shasum -a 256 "$QCONFIG" | awk '{ print $1 }')"
+BUDGET_BACKUP="$(mktemp "$DRILL_ROOT/qconfig-budget.XXXXXX")" || exit 1
+if ! chmod 600 "$BUDGET_BACKUP"; then
+  exit 1
+fi
+if ! cp "$QCONFIG" "$BUDGET_BACKUP"; then
+  exit 1
+fi
+if ! QCONFIG_PRE_SHA256="$(shasum -a 256 "$QCONFIG" | awk '{ print $1 }')"; then
+  exit 1
+fi
 export QCONFIG
 
 restore_budget_config() {
-  cp "$BUDGET_BACKUP" "$QCONFIG"
-  cmp -s "$BUDGET_BACKUP" "$QCONFIG"
-  test "$(shasum -a 256 "$QCONFIG" | awk '{ print $1 }')" = "$QCONFIG_PRE_SHA256"
+  if ! cp "$BUDGET_BACKUP" "$QCONFIG"; then
+    return 1
+  fi
+  if ! cmp -s "$BUDGET_BACKUP" "$QCONFIG"; then
+    return 1
+  fi
+  RESTORED_SHA256="$(shasum -a 256 "$QCONFIG" | awk '{ print $1 }')" || return 1
+  test "$RESTORED_SHA256" = "$QCONFIG_PRE_SHA256"
 }
 abort_budget_drill() {
-  restore_budget_config
+  if ! restore_budget_config; then
+    printf '%s\n' 'budget-config-restoration-failed' >&2
+  fi
   trap - EXIT HUP INT TERM
   exit 1
 }
 trap restore_budget_config EXIT
 trap abort_budget_drill HUP INT TERM
 
-node --input-type=module <<'NODE'
+if ! node --input-type=module <<'NODE'
 import { readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 
 const path = process.env.QCONFIG;
@@ -725,19 +380,49 @@ const temporary = `${path}.budget-drill.${process.pid}`;
 writeFileSync(temporary, updated, { flag: "wx", mode: statSync(path).mode & 0o777 });
 renameSync(temporary, path);
 NODE
+then
+  printf '%s\n' 'budget-config-mutation-failed' >&2
+  abort_budget_drill
+fi
+if ! node --input-type=module <<'NODE'
+import { readFileSync } from "node:fs";
 
-node "$REPO_ROOT/scripts/alpha-ticker-stage-a-hosted/activation-record.mjs" \
-  --verify-qm-install --root "$HOSTED_ROOT"
+const source = readFileSync(process.env.QCONFIG, "utf8");
+const zero = '"ORG_BUDGET_USD_PER_WINDOW": "0"';
+const original = '"ORG_BUDGET_USD_PER_WINDOW": "45"';
+if (source.split(zero).length - 1 !== 1 || source.includes(original)) {
+  throw new Error("zero-budget verification failed");
+}
+NODE
+then
+  printf '%s\n' 'zero-budget-config-verification-failed' >&2
+  abort_budget_drill
+fi
+if ! node "$REPO_ROOT/scripts/alpha-ticker-stage-a-hosted/activation-record.mjs" \
+  --verify-qm-install --root "$HOSTED_ROOT"; then
+  abort_budget_drill
+fi
 cd "$HOSTED_ROOT"
-"$QM_BIN" up --only core
+if ! run_reconciled_qm_up --only core; then
+  abort_budget_drill
+fi
+if ! "$QM_BIN" check --live; then
+  abort_budget_drill
+fi
+if ! "$QM_BIN" status; then
+  abort_budget_drill
+fi
 ```
 
-Run exactly one synthetic denial probe; it must be denied before any provider request. No further turn is permitted until the original 45 configuration is restored and redeployed. Immediately restore the exact original bytes, prove the original hash and single `45` value, clear the traps, rerun policy checks, redeploy core, and revalidate:
+Only that successful mutation, reconciled core deployment, live check, and status readback constitute a verified zero-budget deployment. Run exactly one synthetic denial probe; it must be denied before any provider request. Record only the `h3-zero-budget-denial` pass/fail check. Do not run a second probe. No further turn is permitted until the original 45 configuration is restored and redeployed, reconciled, and revalidated. Regardless of the denial result, immediately restore the exact original bytes and complete the following guarded sequence before incident teardown or any other turn:
 
 ```bash
-restore_budget_config
+if ! restore_budget_config; then
+  printf '%s\n' 'budget-config-restoration-failed' >&2
+  exit 1
+fi
 trap - EXIT HUP INT TERM
-node --input-type=module <<'NODE'
+if ! node --input-type=module <<'NODE'
 import { readFileSync } from "node:fs";
 
 const source = readFileSync(process.env.QCONFIG, "utf8");
@@ -747,21 +432,47 @@ if (source.split(restored).length - 1 !== 1 || source.includes(temporary)) {
   throw new Error("budget restoration invalid");
 }
 NODE
-node "$REPO_ROOT/scripts/alpha-ticker-stage-a-hosted/check-boundary.mjs"
-node --test "$REPO_ROOT/test/alpha-ticker-stage-a-hosted-policy.test.ts" \
-  "$REPO_ROOT/test/alpha-ticker-stage-a-hosted-boundary.test.ts"
-node "$REPO_ROOT/scripts/alpha-ticker-stage-a-hosted/activation-record.mjs" \
-  --verify-qm-install --root "$HOSTED_ROOT"
+then
+  printf '%s\n' 'budget-restoration-verification-failed' >&2
+  exit 1
+fi
+if ! node "$REPO_ROOT/scripts/alpha-ticker-stage-a-hosted/check-boundary.mjs"; then
+  exit 1
+fi
+if ! node --test "$REPO_ROOT/test/alpha-ticker-stage-a-hosted-policy.test.ts" \
+  "$REPO_ROOT/test/alpha-ticker-stage-a-hosted-boundary.test.ts"; then
+  exit 1
+fi
+if ! node "$REPO_ROOT/scripts/alpha-ticker-stage-a-hosted/activation-record.mjs" \
+  --verify-qm-install --root "$HOSTED_ROOT"; then
+  exit 1
+fi
 cd "$HOSTED_ROOT"
-"$QM_BIN" up --only core
-"$QM_BIN" doctor
-"$QM_BIN" check --live
-"$QM_BIN" conformance
-test -z "$(git -C "$REPO_ROOT" status --porcelain --untracked-files=no)"
-rm -- "$BUDGET_BACKUP"
+if ! run_reconciled_qm_up --only core; then
+  exit 1
+fi
+if ! "$QM_BIN" doctor; then
+  exit 1
+fi
+if ! "$QM_BIN" check --live; then
+  exit 1
+fi
+if ! "$QM_BIN" conformance; then
+  exit 1
+fi
+if ! TRACKED_STATUS="$(git -C "$REPO_ROOT" status --porcelain --untracked-files=no)"; then
+  exit 1
+fi
+if [ -n "$TRACKED_STATUS" ]; then
+  printf '%s\n' 'budget-drill-left-tracked-changes' >&2
+  exit 1
+fi
+if ! rm -- "$BUDGET_BACKUP"; then
+  exit 1
+fi
 ```
 
-Do not commit any budget-drill state. A failed restoration, hash comparison, policy test, deployment check, or clean tracked-worktree check stops the pilot.
+Do not commit any budget-drill state. A failed editor or embedded mutation, restoration, hash comparison, policy test, reconciled deployment, live check, or clean tracked-worktree check stops the pilot. The denial probe is prohibited unless the verified zero-budget deployment completed; after the probe, all turns remain frozen until the restored deployment and reconciliation complete.
 
 For the provider-key drill, revoke only the dedicated pilot key and prove the next turn fails while unrelated projects remain unaffected, then replace the revoked key manually in the existing private `.env` using a secure local editor configured for in-place writes with no swap, backup, shell-history value, terminal output, or cloud synchronization. Provider-key replacement must not use `"$QM_BIN" setup`. Verify the file is the same regular inode, mode `0600`, and ignored before pushing:
 
@@ -782,10 +493,19 @@ git -C "$REPO_ROOT" check-ignore --quiet deploy/layers/alpha-ticker-stage-a-host
 node "$REPO_ROOT/scripts/alpha-ticker-stage-a-hosted/activation-record.mjs" \
   --verify-qm-install --root "$HOSTED_ROOT"
 cd "$HOSTED_ROOT"
-"$QM_BIN" secrets push
-"$QM_BIN" up --only core
-"$QM_BIN" doctor
-"$QM_BIN" check --live
+if ! "$QM_BIN" secrets push; then
+  printf '%s\n' 'provider-key-secrets-push-failed' >&2
+  exit 1
+fi
+if ! run_reconciled_qm_up --only core; then
+  exit 1
+fi
+if ! "$QM_BIN" doctor; then
+  exit 1
+fi
+if ! "$QM_BIN" check --live; then
+  exit 1
+fi
 ```
 
 Require model recovery without widening scope. Verify the fixed teardown target list with:
