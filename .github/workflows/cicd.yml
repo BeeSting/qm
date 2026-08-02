@@ -39,9 +39,13 @@ jobs:
         with:
           node-version-file: .node-version
           cache: npm
-          cache-dependency-path: package-lock.json
+          cache-dependency-path: |
+            package-lock.json
+            deploy/layers/alpha-ticker-stage-a-hosted/package-lock.json
       - name: Install
-        run: npm ci
+        run: |
+          npm ci
+          npm ci --prefix deploy/layers/alpha-ticker-stage-a-hosted
       - name: Verify root test shard plan
         if: matrix.shard == 1
         run: npm run test:root:shard:check

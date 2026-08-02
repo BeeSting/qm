@@ -31,6 +31,7 @@ interface DeploymentContract {
 }
 
 interface HostedPolicy {
+  stage: string;
   dataClass: string;
   cloudMutation: string;
   modelBacked: boolean;
@@ -62,6 +63,7 @@ function assertDeploymentContract(value: unknown): asserts value is DeploymentCo
 
 function assertHostedPolicy(value: unknown): asserts value is HostedPolicy {
   assert.ok(isRecord(value));
+  assert.equal(typeof value.stage, "string");
   assert.equal(typeof value.dataClass, "string");
   assert.equal(typeof value.cloudMutation, "string");
   assert.equal(typeof value.modelBacked, "boolean");
@@ -142,6 +144,7 @@ test("hosted Stage A is model-backed, bounded, and connector-free", () => {
   assert.equal(config.env.core?.ORG_BUDGET_USD_PER_WINDOW, "45");
   assert.equal(config.env.core?.SPRITES_EGRESS_PROXY_URL, "https://alpha-ticker-stage-a-egress.fly.dev");
 
+  assert.equal(policy.stage, "A-hosted");
   assert.equal(policy.dataClass, "public-synthetic-only");
   assert.equal(policy.cloudMutation, "gated");
   assert.equal(policy.modelBacked, true);
