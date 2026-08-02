@@ -202,7 +202,7 @@ process.exit(Number.isInteger(result.status) ? result.status : 1);
     apps.map((name, index) => ({
       ID: scenario.flyIdMismatch && index === 0 ? "replacement-app-id" : `private-app-id-${index}`,
       Name: name,
-      Organization: scenario.flyOrg ?? "personal",
+      Organization: { Slug: scenario.flyOrg ?? "personal" },
     })),
   );
   const flyState = join(root, "fly-state.json");
@@ -341,9 +341,14 @@ test("hosted teardown verifies exact Fly organization and immutable app IDs", ()
     { flyOrg: "other-org" },
     { flyIdMismatch: true },
     { flyJson: "not-json" },
-    { flyJson: JSON.stringify([{ ID: "private-app-id-0", Name: apps[0], Organization: { Slug: "personal" } }]) },
-    { flyJson: JSON.stringify([{ ID: "private-app-id-0", Name: [apps[0]], Organization: "personal" }]) },
-    { flyJson: JSON.stringify([{ ID: "private-app-id-0", Name: `${apps[0]}-replacement`, Organization: "personal" }]) },
+    { flyJson: JSON.stringify([{ ID: "private-app-id-0", Name: apps[0], Organization: "personal" }]) },
+    { flyJson: JSON.stringify([{ ID: "private-app-id-0", Name: apps[0], Organization: { Slug: 42 } }]) },
+    { flyJson: JSON.stringify([{ ID: "private-app-id-0", Name: [apps[0]], Organization: { Slug: "personal" } }]) },
+    {
+      flyJson: JSON.stringify([
+        { ID: "private-app-id-0", Name: `${apps[0]}-replacement`, Organization: { Slug: "personal" } },
+      ]),
+    },
   ]) {
     const result = createTeardownScenario(scenario);
     try {
@@ -357,10 +362,32 @@ test("hosted teardown verifies exact Fly organization and immutable app IDs", ()
   }
 });
 
+test("hosted teardown accepts canonical Fly app metadata while preserving identity checks", () => {
+  const flyJson = JSON.stringify(
+    apps.map((name, index) => ({
+      ID: `private-app-id-${index}`,
+      Name: name,
+      Status: "deployed",
+      Organization: { Slug: "personal", Name: "Personal" },
+    })),
+  );
+  const result = createTeardownScenario({
+    flyJson,
+    managedPostgresDeleted: true,
+    objectStorageDeleted: true,
+  });
+  try {
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /teardown-complete/);
+  } finally {
+    result.cleanup();
+  }
+});
+
 test("hosted teardown does not touch absent or near-name apps", () => {
   const flyJson = JSON.stringify([
-    { ID: "private-app-id-0", Name: apps[0], Organization: "personal" },
-    { ID: "near-id", Name: `${apps[1]}-near`, Organization: "personal" },
+    { ID: "private-app-id-0", Name: apps[0], Organization: { Slug: "personal" } },
+    { ID: "near-id", Name: `${apps[1]}-near`, Organization: { Slug: "personal" } },
   ]);
   const result = createTeardownScenario({ flyJson });
   try {
@@ -380,7 +407,7 @@ test("hosted teardown completes a pre-H2 not-started egress and published-sandbo
     capturedApps.map((name) => ({
       ID: `private-app-id-${apps.indexOf(name)}`,
       Name: name,
-      Organization: "personal",
+      Organization: { Slug: "personal" },
     })),
   );
   const result = createTeardownScenario({
@@ -410,7 +437,7 @@ test("hosted teardown cleans captured apps but refuses unresolved partial-H2 com
     capturedApps.map((name) => ({
       ID: `private-app-id-${apps.indexOf(name)}`,
       Name: name,
-      Organization: "personal",
+      Organization: { Slug: "personal" },
     })),
   );
   const result = createTeardownScenario({
@@ -436,7 +463,11 @@ test("hosted teardown cleans captured apps but refuses unresolved partial-H2 com
 test("hosted teardown completes after H2 reconciliation confirms data resources absent", () => {
   const capturedApps = ["alpha-ticker-stage-a-egress"];
   const flyJson = JSON.stringify([
-    { ID: `private-app-id-${apps.indexOf(capturedApps[0]!)}`, Name: capturedApps[0], Organization: "personal" },
+    {
+      ID: `private-app-id-${apps.indexOf(capturedApps[0]!)}`,
+      Name: capturedApps[0],
+      Organization: { Slug: "personal" },
+    },
   ]);
   const result = createTeardownScenario({
     capturedApps,
@@ -463,7 +494,7 @@ test("hosted teardown destroys a partial QM-managed app subset without qm down",
     capturedApps.map((name) => ({
       ID: `private-app-id-${apps.indexOf(name)}`,
       Name: name,
-      Organization: "personal",
+      Organization: { Slug: "personal" },
     })),
   );
   const result = createTeardownScenario({
@@ -493,9 +524,13 @@ test("hosted teardown refuses an approved live app missing from the captured inv
     ...capturedApps.map((name) => ({
       ID: `private-app-id-${apps.indexOf(name)}`,
       Name: name,
-      Organization: "personal",
+      Organization: { Slug: "personal" },
     })),
-    { ID: "uncaptured-core-id", Name: "alpha-ticker-stage-a-hosted-core", Organization: "personal" },
+    {
+      ID: "uncaptured-core-id",
+      Name: "alpha-ticker-stage-a-hosted-core",
+      Organization: { Slug: "personal" },
+    },
   ]);
   const result = createTeardownScenario({
     capturedApps,

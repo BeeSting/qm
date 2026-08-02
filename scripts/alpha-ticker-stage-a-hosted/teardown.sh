@@ -269,14 +269,18 @@ function parseFlyInventory(text, appIds) {
   const expectedIds = new Map([...appIds.entries()].map(([name, id]) => [id, name]));
   for (const entry of value) {
     if (typeof entry !== "object" || entry === null || Array.isArray(entry)) stop("fly-inventory-invalid");
-    if (typeof entry.ID !== "string" || typeof entry.Name !== "string" || typeof entry.Organization !== "string") {
+    if (typeof entry.ID !== "string" || typeof entry.Name !== "string") {
       stop("fly-inventory-invalid");
     }
+    if (typeof entry.Organization !== "object" || entry.Organization === null || Array.isArray(entry.Organization)) {
+      stop("fly-inventory-invalid");
+    }
+    if (typeof entry.Organization.Slug !== "string") stop("fly-inventory-invalid");
     if (expectedIds.has(entry.ID) && expectedIds.get(entry.ID) !== entry.Name) stop("fly-identity-refused");
     if (apps.includes(entry.Name) && !appIds.has(entry.Name)) stop("fly-uncaptured-app-refused");
     if (!appIds.has(entry.Name)) continue;
     if (exact.has(entry.Name)) stop("fly-inventory-invalid");
-    if (entry.Organization !== expectedOrg) stop("fly-ownership-refused");
+    if (entry.Organization.Slug !== expectedOrg) stop("fly-ownership-refused");
     if (entry.ID !== appIds.get(entry.Name)) stop("fly-identity-refused");
     exact.set(entry.Name, true);
   }
