@@ -57,6 +57,9 @@ interface TeardownScenario {
   flyLeaderExitsDescendantIgnores?: boolean;
   capturedApps?: string[];
   captureDataResources?: boolean;
+  captureSandboxRegistry?: boolean;
+  h2ResourceReconciliation?: string;
+  omitH2ResourceReconciliation?: boolean;
   omitTeardownEvidence?: boolean;
   inventoryApps?: Array<{ name: string; id: string }>;
 }
@@ -92,6 +95,8 @@ process.exit(Number.isInteger(result.status) ? result.status : 1);
 
   const inventory = {
     flyOrg: "personal",
+    h2ResourceReconciliation:
+      scenario.h2ResourceReconciliation ?? (scenario.captureDataResources === false ? "not-started" : "complete"),
     apps:
       scenario.inventoryApps ??
       apps
@@ -102,10 +107,11 @@ process.exit(Number.isInteger(result.status) ? result.status : 1);
     objectStorage:
       scenario.captureDataResources === false ? null : { name: dataResources[1], id: "private-storage-id" },
     sandboxRegistry:
-      scenario.captureDataResources === false
+      scenario.captureSandboxRegistry === false
         ? null
         : { name: "alpha-ticker-stage-a-hosted-sandboxes", id: "private-sandbox-id" },
   };
+  if (scenario.omitH2ResourceReconciliation) delete (inventory as Partial<typeof inventory>).h2ResourceReconciliation;
   const inventoryPath = join(generated, "resource-inventory.json");
   const inventoryTarget = `${inventoryPath}.target`;
   writeFileSync(inventoryTarget, `${JSON.stringify(inventory)}\n`, { mode: 0o600 });
@@ -368,7 +374,7 @@ test("hosted teardown does not touch absent or near-name apps", () => {
   }
 });
 
-test("hosted teardown destroys a progressively captured H1 egress and sandbox subset without qm down", () => {
+test("hosted teardown completes a pre-H2 not-started egress and published-sandbox teardown without qm down", () => {
   const capturedApps = ["alpha-ticker-stage-a-hosted-sandboxes", "alpha-ticker-stage-a-egress"];
   const flyJson = JSON.stringify(
     capturedApps.map((name) => ({
@@ -393,6 +399,59 @@ test("hosted teardown destroys a progressively captured H1 egress and sandbox su
     for (const app of apps.filter((name) => !capturedApps.includes(name))) {
       assert.doesNotMatch(calls, new RegExp(`fly:apps destroy ${app} --yes`));
     }
+  } finally {
+    result.cleanup();
+  }
+});
+
+test("hosted teardown cleans captured apps but refuses unresolved partial-H2 completion", () => {
+  const capturedApps = ["alpha-ticker-stage-a-hosted-sandboxes", "alpha-ticker-stage-a-egress"];
+  const flyJson = JSON.stringify(
+    capturedApps.map((name) => ({
+      ID: `private-app-id-${apps.indexOf(name)}`,
+      Name: name,
+      Organization: "personal",
+    })),
+  );
+  const result = createTeardownScenario({
+    capturedApps,
+    captureDataResources: false,
+    h2ResourceReconciliation: "unresolved",
+    omitTeardownEvidence: true,
+    flyJson,
+    qmExit: 97,
+  });
+  try {
+    assert.equal(result.status, 3, result.stderr);
+    assert.equal(result.stdout, "");
+    assert.equal(result.stderr, "h2-resource-reconciliation-required\n");
+    const calls = readCalls(result);
+    assert.doesNotMatch(calls, /qm:down/);
+    for (const app of capturedApps) assert.match(calls, new RegExp(`fly:apps destroy ${app} --yes`));
+  } finally {
+    result.cleanup();
+  }
+});
+
+test("hosted teardown completes after H2 reconciliation confirms data resources absent", () => {
+  const capturedApps = ["alpha-ticker-stage-a-egress"];
+  const flyJson = JSON.stringify([
+    { ID: `private-app-id-${apps.indexOf(capturedApps[0]!)}`, Name: capturedApps[0], Organization: "personal" },
+  ]);
+  const result = createTeardownScenario({
+    capturedApps,
+    captureDataResources: false,
+    h2ResourceReconciliation: "complete",
+    omitTeardownEvidence: true,
+    flyJson,
+    qmExit: 97,
+  });
+  try {
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, "teardown-complete\n");
+    const calls = readCalls(result);
+    assert.doesNotMatch(calls, /qm:down/);
+    assert.match(calls, /fly:apps destroy alpha-ticker-stage-a-egress --yes/);
   } finally {
     result.cleanup();
   }
@@ -469,6 +528,24 @@ test("hosted teardown rejects unknown app names and duplicate immutable IDs in p
       omitTeardownEvidence: true,
       flyJson: "[]",
     });
+    try {
+      assert.notEqual(result.status, 0);
+      assert.equal(result.stdout, "");
+      assert.equal(result.stderr, "resource-inventory-invalid\n");
+      assert.equal(readCalls(result), "");
+    } finally {
+      result.cleanup();
+    }
+  }
+});
+
+test("hosted teardown rejects missing, unknown, and contradictory H2 reconciliation states", () => {
+  for (const scenario of [
+    { omitH2ResourceReconciliation: true },
+    { h2ResourceReconciliation: "pending" },
+    { h2ResourceReconciliation: "not-started" },
+  ]) {
+    const result = createTeardownScenario(scenario);
     try {
       assert.notEqual(result.status, 0);
       assert.equal(result.stdout, "");
@@ -563,7 +640,7 @@ test("hosted teardown parses minimized deletion evidence once before destruction
   }
 });
 
-test("hosted teardown accepts completion only after both minimized deletion statuses", () => {
+test("hosted teardown requires captured H2 data deletion evidence before completion", () => {
   const incomplete = createTeardownScenario({ managedPostgresDeleted: true, objectStorageDeleted: false });
   try {
     assert.equal(incomplete.status, 3);

@@ -177,6 +177,7 @@ function createEvidenceFixture() {
   const privateDatabaseId = "database-private-identifier-do-not-retain";
   writeJson(join(generated, "resource-inventory.json"), {
     flyOrg: "personal",
+    h2ResourceReconciliation: "complete",
     apps: hostedApps.map((name, index) => ({
       name,
       id: index === 0 ? privateAppId : `private-app-identifier-${index}`,
@@ -529,6 +530,31 @@ test("hosted evidence requires all infrastructure identities for an all-pass H2/
   }
 });
 
+test("hosted evidence requires complete H2 resource reconciliation for an all-pass register", () => {
+  for (const livePass of [false, true]) {
+    const fixture = createEvidenceFixture();
+    try {
+      const inventoryPath = join(fixture.generated, "resource-inventory.json");
+      const inventory = JSON.parse(readFileSync(inventoryPath, "utf8"));
+      inventory.h2ResourceReconciliation = "unresolved";
+      writeJson(inventoryPath, inventory);
+      if (!livePass) {
+        writeLiveChecks(
+          fixture.generated,
+          4.5,
+          1.25,
+          liveCheckIds.map((id, index) => ({ id, status: index === 0 ? "fail" : "not-run" })),
+        );
+      }
+
+      if (livePass) assert.throws(() => collect(fixture), /evidence inventory/i);
+      else assert.equal(collect(fixture).pass, false);
+    } finally {
+      fixture.cleanup();
+    }
+  }
+});
+
 test("hosted evidence requires private modes on runtime score, inventory, and live-check files", () => {
   for (const relativePath of ["scores.jsonl", "resource-inventory.json", "live-checks.json"]) {
     const fixture = createEvidenceFixture();
@@ -576,6 +602,24 @@ test("hosted evidence rejects invalid policy, config, egress, and inventory arti
       const path = join(fixture.generated, "resource-inventory.json");
       const value = JSON.parse(readFileSync(path, "utf8"));
       value.apps[1].id = value.apps[0].id;
+      writeJson(path, value);
+    },
+    (fixture) => {
+      const path = join(fixture.generated, "resource-inventory.json");
+      const value = JSON.parse(readFileSync(path, "utf8"));
+      delete value.h2ResourceReconciliation;
+      writeJson(path, value);
+    },
+    (fixture) => {
+      const path = join(fixture.generated, "resource-inventory.json");
+      const value = JSON.parse(readFileSync(path, "utf8"));
+      value.h2ResourceReconciliation = "pending";
+      writeJson(path, value);
+    },
+    (fixture) => {
+      const path = join(fixture.generated, "resource-inventory.json");
+      const value = JSON.parse(readFileSync(path, "utf8"));
+      value.h2ResourceReconciliation = "not-started";
       writeJson(path, value);
     },
   ];

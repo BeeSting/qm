@@ -661,9 +661,14 @@ function validateEgress(snapshot) {
 
 function validateInventory(snapshot, { requireFullInventory = false } = {}) {
   const value = parseSnapshotJson(snapshot, "input invalid");
-  exactOwnKeys(value, ["flyOrg", "apps", "managedPostgres", "objectStorage", "sandboxRegistry"], "inventory invalid");
+  exactOwnKeys(
+    value,
+    ["flyOrg", "h2ResourceReconciliation", "apps", "managedPostgres", "objectStorage", "sandboxRegistry"],
+    "inventory invalid",
+  );
   if (
     value.flyOrg !== "personal" ||
+    !["not-started", "unresolved", "complete"].includes(value.h2ResourceReconciliation) ||
     !Array.isArray(value.apps) ||
     value.apps.length < 1 ||
     value.apps.length > HOSTED_APPS.length
@@ -686,6 +691,13 @@ function validateInventory(snapshot, { requireFullInventory = false } = {}) {
     appNames.add(entry.name);
   }
   if (requireFullInventory && HOSTED_APPS.some((name) => !appNames.has(name))) fail("inventory invalid");
+  if (requireFullInventory && value.h2ResourceReconciliation !== "complete") fail("inventory invalid");
+  if (
+    value.h2ResourceReconciliation === "not-started" &&
+    (value.managedPostgres !== null || value.objectStorage !== null)
+  ) {
+    fail("inventory invalid");
+  }
   for (const [entry, expectedName] of [
     [value.managedPostgres, "alpha-ticker-stage-a-hosted-pg"],
     [value.objectStorage, "alpha-ticker-stage-a-hosted-data"],

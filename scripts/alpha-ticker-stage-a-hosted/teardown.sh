@@ -157,11 +157,12 @@ function validateInventory() {
   const value = parseJsonSnapshot(inventoryPath, "resource-inventory-invalid", { privateMode: true });
   exactObject(
     value,
-    ["flyOrg", "apps", "managedPostgres", "objectStorage", "sandboxRegistry"],
+    ["flyOrg", "h2ResourceReconciliation", "apps", "managedPostgres", "objectStorage", "sandboxRegistry"],
     "resource-inventory-invalid",
   );
   if (
     value.flyOrg !== expectedOrg ||
+    !["not-started", "unresolved", "complete"].includes(value.h2ResourceReconciliation) ||
     !Array.isArray(value.apps) ||
     value.apps.length < 1 ||
     value.apps.length > apps.length
@@ -189,7 +190,15 @@ function validateInventory() {
   const managedPostgresCaptured = optionalEntry(value.managedPostgres, "alpha-ticker-stage-a-hosted-pg");
   const objectStorageCaptured = optionalEntry(value.objectStorage, "alpha-ticker-stage-a-hosted-data");
   optionalEntry(value.sandboxRegistry, "alpha-ticker-stage-a-hosted-sandboxes");
-  return { appIds, managedPostgresCaptured, objectStorageCaptured };
+  if (value.h2ResourceReconciliation === "not-started" && (managedPostgresCaptured || objectStorageCaptured)) {
+    stop("resource-inventory-invalid");
+  }
+  return {
+    appIds,
+    h2ResourceReconciliation: value.h2ResourceReconciliation,
+    managedPostgresCaptured,
+    objectStorageCaptured,
+  };
 }
 
 function validateTeardownEvidence({ managedPostgresCaptured, objectStorageCaptured }) {
@@ -280,7 +289,8 @@ function listFlyApps(appIds) {
 
 const inventory = validateInventory();
 const appIds = inventory.appIds;
-const deletionComplete = validateTeardownEvidence(inventory);
+const deletionComplete =
+  inventory.h2ResourceReconciliation === "unresolved" ? false : validateTeardownEvidence(inventory);
 const qmBin = verifyQmInstall();
 const initialApps = listFlyApps(appIds);
 if (initialApps.size > 0) {
@@ -293,6 +303,7 @@ if (initialApps.size > 0) {
   if (listFlyApps(appIds).size !== 0) stop("fly-apps-still-present");
 }
 
+if (inventory.h2ResourceReconciliation === "unresolved") stop("h2-resource-reconciliation-required", 3);
 if (!deletionComplete) stop("manual-data-destruction-required", 3);
 process.stdout.write("teardown-complete\n");
 NODE
