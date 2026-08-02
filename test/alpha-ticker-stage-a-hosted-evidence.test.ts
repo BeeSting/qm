@@ -113,7 +113,10 @@ function writeLiveChecks(
   generated: string,
   allTurnModelCostUsd = 4.5,
   flyCostUsd = 1.25,
-  checks: Array<{ id: string; status: "pass" | "fail" }> = liveCheckIds.map((id) => ({ id, status: "pass" })),
+  checks: Array<{ id: string; status: "pass" | "fail" | "not-run" }> = liveCheckIds.map((id) => ({
+    id,
+    status: "pass",
+  })),
 ) {
   writeJson(join(generated, "live-checks.json"), {
     checks: checks.map((check) => ({
@@ -214,6 +217,7 @@ test("hosted evidence is exact-schema, aggregate-only, and content-minimized", (
       "commit",
       "contentCaptured",
       "counts",
+      "pass",
       "qmBaseline",
       "sandboxDigest",
       "scoreSummary",
@@ -221,6 +225,7 @@ test("hosted evidence is exact-schema, aggregate-only, and content-minimized", (
       "timestamp",
     ]);
     assert.equal(manifest.contentCaptured, false);
+    assert.equal(manifest.pass, true);
     assert.deepEqual(manifest.counts, { principals: 3, scoredOutputs: 15 });
     assert.equal(manifest.scoreSummary.sampleSize, 15);
     assert.equal(manifest.scoreSummary.pass, true);
@@ -328,22 +333,92 @@ test("hosted evidence enforces the US$45 all-turn model brake and scored-spend f
   }
 });
 
-test("hosted evidence requires the exact complete passing H2 and H3 live-check register", () => {
+test("hosted evidence records complete all-pass, failed, and early not-run H2/H3 registers truthfully", () => {
   const scenarios = [
-    liveCheckIds.slice(1).map((id) => ({ id, status: "pass" as const })),
-    [...liveCheckIds, "arbitrary-check"].map((id) => ({ id, status: "pass" as const })),
-    liveCheckIds.map((id, index) => ({ id, status: index === 4 ? ("fail" as const) : ("pass" as const) })),
-    liveCheckIds.map((id) => ({ id, status: "pass" as const })).reverse(),
+    {
+      checks: liveCheckIds.map((id) => ({ id, status: "pass" as const })).reverse(),
+      expectedPass: true,
+    },
+    {
+      checks: liveCheckIds.map((id, index) => ({
+        id,
+        status: index === 4 ? ("fail" as const) : ("pass" as const),
+      })),
+      expectedPass: false,
+    },
+    {
+      checks: liveCheckIds.map((id, index) => ({
+        id,
+        status: index < 3 ? ("pass" as const) : ("not-run" as const),
+      })),
+      expectedPass: false,
+    },
   ];
-  for (const checks of scenarios) {
+  for (const { checks, expectedPass } of scenarios) {
     const fixture = createEvidenceFixture();
     try {
       writeLiveChecks(fixture.generated, 4.5, 1.25, checks);
-      if (checks[0]?.id === liveCheckIds.at(-1)) assert.doesNotThrow(() => collect(fixture));
-      else assert.throws(() => collect(fixture), /evidence live-checks/i);
+      const manifest = collect(fixture);
+      assert.equal(manifest.pass, expectedPass);
+      assert.equal(
+        manifest.checks.find((check: { id: string }) => check.id === "live-checks")?.status,
+        expectedPass ? "pass" : "fail",
+      );
+      const serialized = readFileSync(join(fixture.generated, "evidence-manifest.json"), "utf8");
+      assert.doesNotMatch(serialized, /h2-|h3-|not-run/);
     } finally {
       fixture.cleanup();
     }
+  }
+});
+
+test("hosted evidence rejects missing, arbitrary, and duplicate live-check identifiers", () => {
+  const invalidRegisters = [
+    liveCheckIds.slice(1).map((id) => ({ id, status: "pass" as const })),
+    [...liveCheckIds, "arbitrary-check"].map((id) => ({ id, status: "pass" as const })),
+    liveCheckIds.map((id, index) => ({ id: index === 1 ? liveCheckIds[0]! : id, status: "pass" as const })),
+  ];
+  for (const checks of invalidRegisters) {
+    const fixture = createEvidenceFixture();
+    try {
+      writeLiveChecks(fixture.generated, 4.5, 1.25, checks);
+      assert.throws(() => collect(fixture), /evidence live-checks/i);
+    } finally {
+      fixture.cleanup();
+    }
+  }
+});
+
+test("hosted evidence CLI returns nonzero after writing an auditable non-passing manifest", () => {
+  const fixture = createEvidenceFixture();
+  try {
+    writeLiveChecks(
+      fixture.generated,
+      4.5,
+      1.25,
+      liveCheckIds.map((id, index) => ({ id, status: index === 0 ? "fail" : "not-run" })),
+    );
+    let stdout = "";
+    let stderr = "";
+    assert.equal(typeof evidenceModule.runEvidenceCli, "function");
+    const exitCode = evidenceModule.runEvidenceCli(
+      {
+        repoRoot: fixture.root,
+        commit: "a".repeat(40),
+        timestamp: "2026-08-02T01:02:03.000Z",
+        output: join(fixture.generated, "evidence-manifest.json"),
+      },
+      {
+        stdout: { write: (value: string) => (stdout += value) },
+        stderr: { write: (value: string) => (stderr += value) },
+      },
+    );
+    assert.equal(exitCode, 1);
+    assert.equal(stdout, ".generated/alpha-ticker-stage-a-hosted/evidence-manifest.json\n");
+    assert.equal(stderr, "");
+    assert.equal(JSON.parse(readFileSync(join(fixture.generated, "evidence-manifest.json"), "utf8")).pass, false);
+  } finally {
+    fixture.cleanup();
   }
 });
 
@@ -472,6 +547,51 @@ test("sandbox digest takes changed mode, size, and bytes from the opened file sn
     assert.equal(manifest.sandboxDigest, expected);
   } finally {
     fixture.cleanup();
+  }
+});
+
+test("hosted evidence rejects sandbox roots and nested directories symlinked outside the repository", () => {
+  for (const target of ["root", "nested"] as const) {
+    const fixture = createEvidenceFixture();
+    const outside = mkdtempSync(join(tmpdir(), "qm-hosted-sandbox-outside-"));
+    try {
+      writeFileSync(join(outside, "outside.txt"), "outside\n");
+      const sandbox = join(fixture.deployment, "sandbox");
+      if (target === "root") {
+        renameSync(sandbox, `${sandbox}.original`);
+        symlinkSync(outside, sandbox);
+      } else {
+        const nested = join(sandbox, "skills");
+        renameSync(nested, `${nested}.original`);
+        symlinkSync(outside, nested);
+      }
+      assert.throws(() => collect(fixture), /sandbox bundle/i);
+    } finally {
+      fixture.cleanup();
+      rmSync(outside, { force: true, recursive: true });
+    }
+  }
+});
+
+test("hosted evidence rejects sandbox-root replacement after directory enumeration", () => {
+  const fixture = createEvidenceFixture();
+  const outside = mkdtempSync(join(tmpdir(), "qm-hosted-sandbox-replacement-"));
+  try {
+    writeFileSync(join(outside, "outside.txt"), "outside\n");
+    const sandbox = join(fixture.deployment, "sandbox");
+    assert.throws(
+      () =>
+        collect(fixture, {
+          afterSandboxList() {
+            renameSync(sandbox, `${sandbox}.original`);
+            symlinkSync(outside, sandbox);
+          },
+        }),
+      /sandbox bundle/i,
+    );
+  } finally {
+    fixture.cleanup();
+    rmSync(outside, { force: true, recursive: true });
   }
 });
 

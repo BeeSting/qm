@@ -91,6 +91,7 @@ const TOP_LEVEL_KEYS = [
   "qmBaseline",
   "sandboxDigest",
   "timestamp",
+  "pass",
   "checks",
   "counts",
   "scoreSummary",
@@ -290,6 +291,7 @@ export function assertEvidenceSafe(manifest) {
   assertSha1(manifest.qmBaseline, "qmBaseline");
   assertSha256(manifest.sandboxDigest, "sandboxDigest");
   if (typeof manifest.timestamp !== "string" || !Number.isFinite(Date.parse(manifest.timestamp))) fail("timestamp");
+  if (typeof manifest.pass !== "boolean") fail("pass");
   if (manifest.contentCaptured !== false) fail("contentCaptured");
 
   if (!Array.isArray(manifest.checks) || manifest.checks.length !== CHECK_IDS.length) fail("checks");
@@ -324,6 +326,8 @@ export function assertEvidenceSafe(manifest) {
   }
   const expectedTotal = manifest.spendSummary.allTurnModelCostUsd + manifest.spendSummary.flyCostUsd;
   if (Math.abs(expectedTotal - manifest.spendSummary.totalCostUsd) > 1e-9) fail("spendSummary");
+  const expectedPass = manifest.scoreSummary.pass && manifest.checks.every((check) => check.status === "pass");
+  if (manifest.pass !== expectedPass) fail("pass");
 }
 
 function sha256(content) {
@@ -654,7 +658,9 @@ function parseLiveChecks(snapshot) {
   for (const check of value.checks) {
     exactOwnKeys(check, LIVE_CHECK_KEYS, "input invalid");
     if (typeof check.id !== "string" || !/^[a-z][a-z0-9-]{1,63}$/.test(check.id)) fail("input invalid");
-    if (check.status !== "pass") fail("live-checks invalid");
+    if (check.status !== "pass" && check.status !== "fail" && check.status !== "not-run") {
+      fail("live-checks invalid");
+    }
     if (typeof check.timestamp !== "string" || !Number.isFinite(Date.parse(check.timestamp))) fail("input invalid");
     if (typeof check.revision !== "string" || check.revision.trim() === "") fail("input invalid");
     assertSha256(check.resourceNameSha256, "input invalid");
@@ -698,44 +704,106 @@ function parseScoreLedger(snapshot) {
   }
 }
 
-function listSandboxFiles(root, current = root, files = []) {
-  let entries;
+function secureDirectorySnapshot(repoRoot, path) {
+  const root = resolve(repoRoot);
+  const target = resolve(path);
+  const relativeTarget = relative(root, target);
+  if (relativeTarget.startsWith("..") || resolve(root, relativeTarget) !== target) fail("sandbox bundle invalid");
+
+  let canonicalRoot;
   try {
-    entries = readdirSync(current, { withFileTypes: true });
+    const rootStat = lstatSync(root, { bigint: true });
+    if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) fail("sandbox bundle invalid");
+    canonicalRoot = realpathSync(root);
   } catch {
     fail("sandbox bundle invalid");
   }
-  for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
-    const path = join(current, entry.name);
+
+  let current = root;
+  let snapshot;
+  const components = relativeTarget === "" ? [] : relativeTarget.split(sep);
+  for (const component of ["", ...components]) {
+    if (component !== "") current = join(current, component);
     let stat;
     try {
-      stat = lstatSync(path);
+      stat = lstatSync(current, { bigint: true });
+      if (stat.isSymbolicLink() || !stat.isDirectory()) fail("sandbox bundle invalid");
+      const expected = join(canonicalRoot, relative(root, current));
+      if (realpathSync(current) !== expected) fail("sandbox bundle invalid");
     } catch {
       fail("sandbox bundle invalid");
     }
-    if (stat.isSymbolicLink()) fail("sandbox bundle invalid");
-    if (stat.isDirectory()) listSandboxFiles(root, path, files);
-    else if (stat.isFile()) files.push(path);
-    else fail("sandbox bundle invalid");
-    if (files.length > MAX_SANDBOX_FILES) fail("sandbox bundle invalid");
+    snapshot = stat;
   }
-  return files;
+  return snapshot;
 }
 
-function sandboxDigest(root, hooks) {
-  const files = listSandboxFiles(root);
+function listSandboxFiles(repoRoot, sandboxRoot) {
+  const files = [];
+  const directories = new Map();
+
+  const recordDirectory = (path) => {
+    const snapshot = secureDirectorySnapshot(repoRoot, path);
+    const prior = directories.get(path);
+    if (prior && !sameIdentity(prior, snapshot)) fail("sandbox bundle invalid");
+    directories.set(path, snapshot);
+    return snapshot;
+  };
+
+  const walk = (current) => {
+    const before = recordDirectory(current);
+    let entries;
+    try {
+      entries = readdirSync(current, { withFileTypes: true });
+    } catch {
+      fail("sandbox bundle invalid");
+    }
+    if (!sameIdentity(before, recordDirectory(current))) fail("sandbox bundle invalid");
+    for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+      const path = join(current, entry.name);
+      const relativePath = relative(sandboxRoot, path);
+      if (relativePath.startsWith("..") || resolve(sandboxRoot, relativePath) !== path) {
+        fail("sandbox bundle invalid");
+      }
+      let stat;
+      try {
+        stat = lstatSync(path);
+      } catch {
+        fail("sandbox bundle invalid");
+      }
+      if (stat.isSymbolicLink()) fail("sandbox bundle invalid");
+      if (stat.isDirectory()) walk(path);
+      else if (stat.isFile()) files.push(path);
+      else fail("sandbox bundle invalid");
+      if (files.length > MAX_SANDBOX_FILES) fail("sandbox bundle invalid");
+    }
+    if (!sameIdentity(before, recordDirectory(current))) fail("sandbox bundle invalid");
+  };
+
+  walk(sandboxRoot);
+  return { directories, files, recordDirectory };
+}
+
+function sandboxDigest(repoRoot, root, hooks) {
+  const state = listSandboxFiles(repoRoot, root);
   try {
     hooks.afterSandboxList?.();
   } catch {
     fail("sandbox bundle invalid");
   }
+  for (const [path, snapshot] of state.directories) {
+    if (!sameIdentity(snapshot, state.recordDirectory(path))) fail("sandbox bundle invalid");
+  }
   let totalBytes = 0;
-  const index = files.map((path) => {
+  const index = state.files.map((path) => {
     const snapshot = snapshotRegularFile(`sandbox:${relative(root, path)}`, path, MAX_ARTIFACT_BYTES, hooks);
     totalBytes += snapshot.size;
     if (totalBytes > MAX_SANDBOX_BYTES) fail("sandbox bundle invalid");
     return `${relative(root, path)}:${snapshot.mode.toString(8)}:${snapshot.hash}`;
   });
+  for (const [path, snapshot] of state.directories) {
+    if (!sameIdentity(snapshot, state.recordDirectory(path))) fail("sandbox bundle invalid");
+  }
   const digest = sha256(index.join("\n"));
   try {
     hooks.afterSnapshot?.("sandbox-bundle");
@@ -767,7 +835,7 @@ function snapshotRepositoryEvidenceInputs(root, hooks = {}) {
   validatePolicy(snapshots.policy);
   validateConfig(snapshots.config);
   validateEgress(snapshots.egress);
-  const digest = sandboxDigest(join(deployment, "sandbox"), hooks);
+  const digest = sandboxDigest(root, join(deployment, "sandbox"), hooks);
   return { baseline, deployment, digest, snapshots };
 }
 
@@ -934,6 +1002,7 @@ export function collectEvidence({
   }
   validateInventory(snapshots.inventory);
   const liveChecks = parseLiveChecks(snapshots.liveChecks);
+  const liveChecksPass = liveChecks.checks.every((check) => check.status === "pass");
   const scoreSummary = parseScoreLedger(snapshots.ledger);
   if (scoreSummary.sampleSize !== 15) fail("scoreSummary");
   if (liveChecks.spendSummary.allTurnModelCostUsd < scoreSummary.totalCostUsd) fail("spendSummary");
@@ -949,7 +1018,7 @@ export function collectEvidence({
     { id: "resource-inventory", status: "pass", artifactSha256: snapshots.inventory.hash },
     {
       id: "live-checks",
-      status: liveChecks.checks.every((check) => check.status === "pass") ? "pass" : "fail",
+      status: liveChecksPass ? "pass" : "fail",
       artifactSha256: snapshots.liveChecks.hash,
     },
   ];
@@ -958,6 +1027,7 @@ export function collectEvidence({
     qmBaseline: baseline.commit,
     sandboxDigest: digest,
     timestamp,
+    pass: scoreSummary.pass && liveChecksPass,
     checks,
     counts: { principals: 3, scoredOutputs: scoreSummary.sampleSize },
     scoreSummary,
@@ -974,6 +1044,17 @@ export function collectEvidence({
   return manifest;
 }
 
+export function runEvidenceCli(options, streams = { stdout: process.stdout, stderr: process.stderr }) {
+  try {
+    const manifest = collectEvidence(options);
+    streams.stdout.write(`${DEFAULT_OUTPUT}\n`);
+    return manifest.pass ? 0 : 1;
+  } catch {
+    streams.stderr.write("evidence-collection: invalid\n");
+    return 1;
+  }
+}
+
 function isDirectExecution(argvEntry) {
   if (!argvEntry || argvEntry === "-") return false;
   try {
@@ -984,13 +1065,6 @@ function isDirectExecution(argvEntry) {
 }
 
 if (isDirectExecution(process.argv[1])) {
-  try {
-    if (process.argv.length !== 2) fail("arguments invalid");
-    const manifest = collectEvidence();
-    process.stdout.write(`${DEFAULT_OUTPUT}\n`);
-    if (!manifest.scoreSummary.pass || manifest.checks.some((check) => check.status !== "pass")) process.exitCode = 1;
-  } catch {
-    process.stderr.write("evidence-collection: invalid\n");
-    process.exitCode = 1;
-  }
+  process.exitCode = process.argv.length === 2 ? runEvidenceCli() : 1;
+  if (process.argv.length !== 2) process.stderr.write("evidence-collection: invalid\n");
 }
