@@ -5,6 +5,7 @@ export interface BoundaryViolation {
 
 export interface BoundaryOptions {
   allowedPublicUrls?: Set<string>;
+  readTextFile?: (filePath: string) => string;
 }
 
 export function scanDirectory(root: string, options?: BoundaryOptions): BoundaryViolation[];

@@ -81,6 +81,7 @@ function listFiles(root, violations) {
     }
     if (entry.isFile()) {
       if (entry.size <= TEXT_FILE_LIMIT) files.push(current);
+      else addViolation(violations, entryName(root, current), "OVERSIZED_ENTRY");
       continue;
     }
     addViolation(violations, entryName(root, current), "UNSUPPORTED_ENTRY_TYPE");
@@ -117,17 +118,107 @@ function normalizedOrigins(allowedPublicUrls) {
   return origins;
 }
 
-function scanPublicUrl(content, file, violations, { allowedOrigins, localPolicy }) {
-  const keys = [...content.matchAll(/["']publicUrl["']\s*:/gi)];
-  const matches = [...content.matchAll(/["']publicUrl["']\s*:\s*["']([^"']+)["']/gi)];
-  if (keys.length > 1) addViolation(violations, file, "DUPLICATE_PUBLIC_URL");
-  if (keys.length !== matches.length) {
-    addViolation(violations, file, "UNAPPROVED_PUBLIC_URL");
-    if (localPolicy) addViolation(violations, file, "NON_LOOPBACK_PUBLIC_URL");
+// Mirror the production config loader's JSONC string handling while retaining duplicate keys.
+function scanJsonString(content, start) {
+  for (let index = start + 1; index < content.length; index++) {
+    if (content[index] === "\\") {
+      index++;
+      continue;
+    }
+    if (content[index] === '"') return index + 1;
   }
-  for (const match of matches) {
+  return undefined;
+}
+
+function skipJsoncTrivia(content, start) {
+  let index = start;
+  while (index < content.length) {
+    if (/\s/.test(content[index])) {
+      index++;
+      continue;
+    }
+    if (content[index] === "/" && content[index + 1] === "/") {
+      index += 2;
+      while (index < content.length && content[index] !== "\n") index++;
+      continue;
+    }
+    if (content[index] === "/" && content[index + 1] === "*") {
+      const close = content.indexOf("*/", index + 2);
+      if (close < 0) return { index: content.length, malformed: true };
+      index = close + 2;
+      continue;
+    }
+    break;
+  }
+  return { index, malformed: false };
+}
+
+function jsoncPropertyTokens(content) {
+  const properties = [];
+  let malformed = false;
+  for (let index = 0; index < content.length;) {
+    const trivia = skipJsoncTrivia(content, index);
+    if (trivia.malformed) return { properties, malformed: true };
+    index = trivia.index;
+    if (content[index] !== '"') {
+      index++;
+      continue;
+    }
+
+    const keyEnd = scanJsonString(content, index);
+    if (keyEnd === undefined) return { properties, malformed: true };
+    const afterKey = skipJsoncTrivia(content, keyEnd);
+    if (afterKey.malformed) return { properties, malformed: true };
+    if (content[afterKey.index] !== ":") {
+      index = keyEnd;
+      continue;
+    }
+
+    let key;
     try {
-      const url = new URL(match[1]);
+      key = JSON.parse(content.slice(index, keyEnd));
+    } catch {
+      malformed = true;
+      index = keyEnd;
+      continue;
+    }
+
+    const afterColon = skipJsoncTrivia(content, afterKey.index + 1);
+    if (afterColon.malformed) return { properties, malformed: true };
+    let value;
+    let stringValue = false;
+    if (content[afterColon.index] === '"') {
+      const valueEnd = scanJsonString(content, afterColon.index);
+      if (valueEnd === undefined) {
+        if (key === "publicUrl") malformed = true;
+      } else {
+        try {
+          value = JSON.parse(content.slice(afterColon.index, valueEnd));
+          stringValue = true;
+        } catch {
+          if (key === "publicUrl") malformed = true;
+        }
+      }
+    }
+    properties.push({ key, stringValue, value });
+    index = keyEnd;
+  }
+  return { properties, malformed };
+}
+
+function scanPublicUrl(content, file, violations, { allowedOrigins, localPolicy }) {
+  const tokenized = jsoncPropertyTokens(content);
+  if (tokenized.malformed) addViolation(violations, file, "MALFORMED_JSONC");
+  const publicUrls = tokenized.properties.filter((property) => property.key === "publicUrl");
+  if (publicUrls.length > 1) addViolation(violations, file, "DUPLICATE_PUBLIC_URL");
+  for (const property of publicUrls) {
+    if (!property.stringValue) {
+      addViolation(violations, file, "UNAPPROVED_PUBLIC_URL");
+      if (localPolicy) addViolation(violations, file, "NON_LOOPBACK_PUBLIC_URL");
+      continue;
+    }
+    try {
+      const url = new URL(property.value);
       const approved =
         (url.protocol === "http:" || url.protocol === "https:") &&
         !url.username &&
@@ -191,7 +282,13 @@ function publicUrlPolicy(allowedPublicUrls) {
   };
 }
 
-export function scanDirectory(root, { allowedPublicUrls = new Set(["http://localhost:8082"]) } = {}) {
+export function scanDirectory(
+  root,
+  {
+    allowedPublicUrls = new Set(["http://localhost:8082"]),
+    readTextFile = (filePath) => readFileSync(filePath, "utf8"),
+  } = {},
+) {
   const absoluteRoot = resolve(root);
   const violations = [];
   if (!isWithinRepository(absoluteRoot)) {
@@ -227,8 +324,13 @@ export function scanDirectory(root, { allowedPublicUrls = new Set(["http://local
     }
     let content;
     try {
-      content = readFileSync(filePath, "utf8");
+      content = readTextFile(filePath);
     } catch {
+      addViolation(violations, `${sep}${file}`, "UNREADABLE_ENTRY");
+      continue;
+    }
+    if (typeof content !== "string") {
+      addViolation(violations, `${sep}${file}`, "UNREADABLE_ENTRY");
       continue;
     }
     if (content.includes("\0")) continue;

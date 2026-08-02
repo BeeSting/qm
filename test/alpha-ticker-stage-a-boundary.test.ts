@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -130,6 +130,46 @@ test("rejects unsupported filesystem entry types", () => {
   try {
     execFileSync("mkfifo", [join(root, "synthetic.fifo")]);
     assert.ok(ruleIds(root).includes("UNSUPPORTED_ENTRY_TYPE"));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("reports regular-file read errors without exposing the error value", () => {
+  const root = mkdtempSync(join(repositoryRoot, ".alpha-ticker-stage-a-boundary-"));
+  try {
+    const unreadable = join(root, "unreadable.txt");
+    writeFileSync(unreadable, "synthetic\n");
+    const violations = scanDirectory(root, {
+      readTextFile(filePath) {
+        if (filePath === unreadable) throw new Error("synthetic-sensitive-read-error");
+        return readFileSync(filePath, "utf8");
+      },
+    });
+
+    assert.ok(violations.some((violation) => violation.ruleId === "UNREADABLE_ENTRY"));
+    assert.ok(!JSON.stringify(violations).includes("synthetic-sensitive-read-error"));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("reports oversized files without reading their contents", () => {
+  const root = mkdtempSync(join(repositoryRoot, ".alpha-ticker-stage-a-boundary-"));
+  try {
+    const oversized = join(root, "oversized.txt");
+    writeFileSync(oversized, "");
+    truncateSync(oversized, 2_000_001);
+    let readAttempted = false;
+    const violations = scanDirectory(root, {
+      readTextFile() {
+        readAttempted = true;
+        return "";
+      },
+    });
+
+    assert.ok(violations.some((violation) => violation.ruleId === "OVERSIZED_ENTRY"));
+    assert.equal(readAttempted, false);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

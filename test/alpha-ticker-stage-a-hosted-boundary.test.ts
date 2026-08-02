@@ -77,6 +77,34 @@ test("hosted profile rejects duplicate publicUrl keys in either order", () => {
   }
 });
 
+test("hosted profile decodes escaped property keys before duplicate checks", () => {
+  for (const content of [
+    `{"publicUrl":"${hostedOrigin}","\\u0070ublicUrl":"https://other.fly.dev"}\n`,
+    `{"\\u0070ublicUrl":"https://other.fly.dev","publicUrl":"${hostedOrigin}"}\n`,
+  ]) {
+    withContent(content, (root) => {
+      const violations = scanDirectory(root, { allowedPublicUrls });
+      const ids = violations.map((violation) => violation.ruleId);
+      assert.ok(ids.includes("DUPLICATE_PUBLIC_URL"));
+      assert.ok(ids.includes("UNAPPROVED_PUBLIC_URL"));
+      assert.ok(!JSON.stringify(violations).includes("other.fly.dev"));
+    });
+  }
+});
+
+test("hosted profile rejects malformed JSON string escapes", () => {
+  for (const content of [
+    `{"publicUrl":"${hostedOrigin}","\\u00G0ublicUrl":"https://other.fly.dev"}\n`,
+    `{"publicUrl":"https://alpha-ticker-stage-a-hosted-portal.fly.dev/\\u00G0"}\n`,
+  ]) {
+    withContent(content, (root) => {
+      const violations = scanDirectory(root, { allowedPublicUrls });
+      assert.ok(violations.some((violation) => violation.ruleId === "MALFORMED_JSONC"));
+      assert.ok(!JSON.stringify(violations).includes("other.fly.dev"));
+    });
+  }
+});
+
 test("hosted profile rejects duplicate or non-string publicUrl values", () => {
   for (const content of [
     `{"publicUrl":"${hostedOrigin}","publicUrl":"${hostedOrigin}"}\n`,
