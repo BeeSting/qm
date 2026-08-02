@@ -641,6 +641,54 @@ wait "$descendant_pid"
   }
 });
 
+test("timeout helper bounds provider output and reaps the detached process group", () => {
+  const root = mkdtempSync(join(tmpdir(), "qm-timeout-output-bound-"));
+  const processFile = join(root, "processes.txt");
+  let leaderPid: number | undefined;
+  try {
+    const command = join(root, "overflow-with-descendant.sh");
+    writeShim(
+      command,
+      `process_file=$1
+trap 'exit 0' TERM
+(
+  trap '' TERM
+  while :; do sleep 10; done
+) &
+descendant_pid=$!
+printf '%s %s\n' "$$" "$descendant_pid" > "$process_file"
+head -c 1100000 /dev/zero | tr '\\000' x
+wait "$descendant_pid"
+`,
+    );
+
+    const result = spawnSync(
+      process.execPath,
+      [activationScript, "--run-timeout", "5000", "--", command, processFile],
+      {
+        stdio: "ignore",
+        timeout: 8_000,
+        killSignal: "SIGKILL",
+      },
+    );
+    const [leaderText, descendantText] = readFileSync(processFile, "utf8").trim().split(" ");
+    leaderPid = Number(leaderText);
+    const descendantPid = Number(descendantText);
+
+    assert.equal(result.status, 125);
+    assert.throws(() => process.kill(descendantPid, 0), { code: "ESRCH" });
+  } finally {
+    if (leaderPid !== undefined) {
+      try {
+        process.kill(-leaderPid, "SIGKILL");
+      } catch {
+        // The detached process group is expected to have been removed already.
+      }
+    }
+    rmSync(root, { force: true, recursive: true });
+  }
+});
+
 test("hosted preflight passes with only named status output", () => {
   const result = createPreflightScenario();
   try {

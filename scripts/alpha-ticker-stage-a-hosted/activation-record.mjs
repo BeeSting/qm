@@ -38,6 +38,7 @@ const EMAIL_VALUE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const ACTIVATION_INPUT_LIMIT_BYTES = 64 * 1024;
 const FLY_JSON_INPUT_LIMIT_BYTES = 1024 * 1024;
 const QM_METADATA_INPUT_LIMIT_BYTES = 1024 * 1024;
+const TIMED_COMMAND_OUTPUT_LIMIT_BYTES = 1024 * 1024;
 const QM_PACKAGE_VERSION = "0.1.4";
 const QM_PACKAGE_NAME = "@yc-software/qm";
 const QM_PACKAGE_RESOLVED = "https://registry.npmjs.org/@yc-software/qm/-/qm-0.1.4.tgz";
@@ -478,10 +479,13 @@ async function runTimedCommand(args) {
   }
 
   const child = spawn(args[3], args.slice(4), {
-    stdio: ["ignore", "inherit", "inherit"],
+    stdio: ["ignore", "pipe", "pipe"],
     detached: process.platform !== "win32",
   });
-  let timedOut = false;
+  const stdout = [];
+  const stderr = [];
+  let capturedBytes = 0;
+  let terminationCode = null;
   const exitCode = await new Promise((complete) => {
     let completed = false;
     let leaderFinished = false;
@@ -503,14 +507,15 @@ async function runTimedCommand(args) {
 
     const pollForProcessGroupExit = () => {
       if (leaderFinished && !processGroupExists(child)) {
-        settle(124);
+        settle(terminationCode ?? 124);
         return;
       }
       settlePollTimer = setTimeout(pollForProcessGroupExit, 25);
     };
 
-    const timeoutTimer = setTimeout(() => {
-      timedOut = true;
+    const terminate = (code) => {
+      if (terminationCode !== null) return;
+      terminationCode = code;
       signalProcessGroup(child, "SIGTERM");
       hardKillTimer = setTimeout(() => {
         hardKillSent = true;
@@ -518,21 +523,41 @@ async function runTimedCommand(args) {
         settleDeadlineTimer = setTimeout(() => {
           signalProcessGroup(child, "SIGKILL");
           child.unref();
-          settle(124);
+          settle(code);
         }, 1000);
         pollForProcessGroupExit();
       }, 250);
-    }, timeoutMs);
+    };
+
+    const capture = (target, chunk) => {
+      if (terminationCode !== null) return;
+      capturedBytes += chunk.length;
+      if (capturedBytes > TIMED_COMMAND_OUTPUT_LIMIT_BYTES) {
+        stdout.length = 0;
+        stderr.length = 0;
+        terminate(125);
+        return;
+      }
+      target.push(chunk);
+    };
+    child.stdout.on("data", (chunk) => capture(stdout, chunk));
+    child.stderr.on("data", (chunk) => capture(stderr, chunk));
+
+    const timeoutTimer = setTimeout(() => terminate(124), timeoutMs);
 
     const recordLeaderExit = (code) => {
       leaderFinished = true;
       leaderExitCode = code;
-      if (!timedOut) settle(leaderExitCode);
-      else if (hardKillSent && !processGroupExists(child)) settle(124);
+      if (terminationCode === null) settle(leaderExitCode);
+      else if (hardKillSent && !processGroupExists(child)) settle(terminationCode);
     };
     child.once("error", () => recordLeaderExit(1));
     child.once("exit", (code) => recordLeaderExit(Number.isInteger(code) ? code : 1));
   });
+  if (terminationCode === null) {
+    for (const chunk of stdout) process.stdout.write(chunk);
+    for (const chunk of stderr) process.stderr.write(chunk);
+  }
   process.exitCode = exitCode;
   return true;
 }
