@@ -23,6 +23,18 @@ The private live-check input must contain the complete fixed H2/H3 register. Eve
 
 The retained aggregate manifest does not retain the granular H2/H3 statuses or check identifiers. It retains the input hash and aggregate result, preventing private operational detail from leaking into decision evidence while preserving a verifiable fail-closed outcome.
 
+## Early-Stop Evidence
+
+Evidence collection supports zero through fourteen scored outputs, including a missing `scores.jsonl` when no workflow completed. This path is valid only for a non-passing manifest backed by the complete fixed H2/H3 register with at least one `fail` or `not-run` status. A missing or partial ledger can never produce a passing decision.
+
+A partial approved inventory is also accepted only when the H2/H3 register is non-passing. Starting at H1, capture each successfully created approved resource immediately, before the next cloud mutation, while leaving uncreated resource fields `null`. Keep the progressive inventory ignored and mode `0600` so exact-name, immutable-id teardown remains available after an early stop. A passing live register still requires the complete resource inventory.
+
+The collector writes an auditable non-passing manifest before returning a nonzero process status. For a missing ledger, the evaluation-ledger artifact hash is `null` and the recorded sample size is zero; this is an explicit early-stop state, not missing evidence.
+
+## Teardown Evidence Lifecycle
+
+Before the first H5 teardown dry-run or execute, both deletion booleans begin `false` and both deletion timestamps are `null` in the ignored mode-`0600` teardown-evidence file. They change to `true` only after Managed Postgres and Tigris deletion are independently confirmed, at which point valid UTC deletion timestamps are recorded. The transition is one-way and never substitutes for the final absence checks.
+
 ## Hashed Artifacts
 
 The manifest hashes these eight artifacts:

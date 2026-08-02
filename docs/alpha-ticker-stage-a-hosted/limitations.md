@@ -15,6 +15,7 @@ Hosted Stage A is a bounded public-synthetic evaluation. It is not a production-
 11. **Synthetic-data limitation.** Only committed fixtures marked synthetic and advisory-only are tested. Results cannot be extrapolated to live Alpha Packets, confidential documents, production portfolios, or customer data.
 12. **Model limitation.** Results apply only to `gpt-5.6-terra` through the pinned `pi` harness and deployment revision. There is no automatic fallback and no multi-provider comparison.
 13. **Hosting limitation.** Fly is a specialist QM execution layer. Stage A does not migrate, connect to, or validate Alpha Ticker's Vercel, Railway, or Supabase systems.
-14. **Teardown limitation.** The automated script destroys only exact Fly applications. Managed Postgres and Tigris require separately verified manual deletion before teardown is complete.
+14. **Teardown limitation.** The automated script destroys only exact captured Fly applications. Cryptographic QM verification and hardened process-group timeouts prevent an unverified local executable or hung provider command from silently widening teardown, but they do not delete Managed Postgres or Tigris. Those resources require separately verified manual deletion before teardown is complete.
+15. **Early-stop evidence limitation.** A missing or partial score ledger and partial approved resource inventory are accepted only to preserve non-passing decision evidence after a stop. They can never satisfy the Stage A acceptance gate, and the complete fail-closed H2/H3 status register is still required.
 
 A successful result supports only a decision to stop, repeat the synthetic evaluation, or design a separately approved Stage B.

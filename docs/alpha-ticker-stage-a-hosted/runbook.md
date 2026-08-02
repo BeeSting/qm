@@ -89,16 +89,22 @@ Every operational QM block below re-verifies the repository-local install immedi
 
 H0 may establish the dedicated, capped provider project and revocable pilot SMTP grant. It must not create Fly resources, upload deployment secrets, or make billable model calls.
 
-At H0, leave `FLY_SANDBOX_API_TOKEN` unset. Supply every other H0 input through the interactive local setup without exposing values, then enforce the local-file controls:
+At H0, leave `FLY_SANDBOX_API_TOKEN` unset. Before setup, use a secure local editor configured without swap, backup, history, or cloud synchronization to populate both `ADMIN_GRANTS` and `AUTH_ALLOWED_EMAILS` directly in the private `.env` before setup. Populate the remaining H0-available inputs there as well. The two identity lists are independent: setup is validation-only and must not derive one identity list from the other.
 
 ```bash
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 HOSTED_ROOT="$REPO_ROOT/deploy/layers/alpha-ticker-stage-a-hosted"
 QM_BIN="$HOSTED_ROOT/node_modules/.bin/qm"
+umask 077
+"${EDITOR:?set EDITOR to a secure local editor}" "$HOSTED_ROOT/.env"
+test -f "$HOSTED_ROOT/.env"
+test ! -L "$HOSTED_ROOT/.env"
+chmod 600 "$HOSTED_ROOT/.env"
+git -C "$REPO_ROOT" check-ignore --quiet deploy/layers/alpha-ticker-stage-a-hosted/.env
 node "$REPO_ROOT/scripts/alpha-ticker-stage-a-hosted/activation-record.mjs" \
   --verify-qm-install --root "$HOSTED_ROOT"
 cd "$HOSTED_ROOT"
-"$QM_BIN" setup
+"$QM_BIN" setup </dev/null >/dev/null 2>&1
 chmod 600 "$HOSTED_ROOT/.env"
 git -C "$REPO_ROOT" check-ignore --quiet deploy/layers/alpha-ticker-stage-a-hosted/.env
 cd "$REPO_ROOT"
@@ -107,17 +113,28 @@ node scripts/alpha-ticker-stage-a-hosted/activation-record.mjs \
 bash scripts/alpha-ticker-stage-a-hosted/preflight.sh
 ```
 
-The expected final line is `hosted-preflight: pass`. A name collision, unavailable `jnb`, failed hard US$50 provider control, retention gap, runtime mismatch, dirty tracked tree, boundary failure, or unexpected QM plan result stops H0. Do not continue to H1 unless preflight passes.
+Identity output may never be retained in terminal capture, logs, evidence, shell history, or committed files. The suppressed setup command must validate the directly supplied values without printing, rewriting, or deriving either identity list; if the pinned command cannot do that, stop H0. The expected preflight final line is `hosted-preflight: pass`. A name collision, unavailable `jnb`, failed hard US$50 provider control, retention gap, runtime mismatch, dirty tracked tree, boundary failure, or unexpected QM plan result stops H0. Do not continue to H1 unless preflight passes.
 
 ### Gate H1: Egress And Immutable Sandbox
 
-Create the exact egress application only after H0 passes. Import the capability secret through a write-only pipe before deployment; never echo it, place it in argv, or persist it outside the ignored mode-`0600` input:
+Create the exact egress application only after H0 passes. H1 uses progressive private inventory: immediately after each successful create and before the next cloud mutation, capture that resource's exact approved name and immutable identifier in `.generated/alpha-ticker-stage-a-hosted/resource-inventory.json`. Keep the partial inventory ignored and mode `0600` so an H1 stop can use the hardened teardown path.
 
 ```bash
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 HOSTED_ROOT="$REPO_ROOT/deploy/layers/alpha-ticker-stage-a-hosted"
 QM_BIN="$HOSTED_ROOT/node_modules/.bin/qm"
+INVENTORY_PATH="$REPO_ROOT/.generated/alpha-ticker-stage-a-hosted/resource-inventory.json"
+mkdir -p "$(dirname "$INVENTORY_PATH")"
+chmod 700 "$(dirname "$INVENTORY_PATH")"
 fly apps create alpha-ticker-stage-a-egress --org personal
+```
+
+Before importing or deploying anything else, use a secure local inventory path to record the egress app under `apps`. Set `flyOrg` to `personal` and leave `managedPostgres`, `objectStorage`, and `sandboxRegistry` as `null` until those resources actually exist. Never print the immutable identifier:
+
+```bash
+"${EDITOR:?set EDITOR to a secure local inventory editor}" "$INVENTORY_PATH"
+chmod 600 "$INVENTORY_PATH"
+git -C "$REPO_ROOT" check-ignore --quiet .generated/alpha-ticker-stage-a-hosted/resource-inventory.json
 awk -F= '$1 == "CAPABILITY_SECRET" { print }' "$HOSTED_ROOT/.env" |
   fly secrets import -a alpha-ticker-stage-a-egress
 fly deploy "$REPO_ROOT" \
@@ -133,10 +150,15 @@ node -- "$REPO_ROOT/scripts/alpha-ticker-stage-a-hosted/probe-egress.mjs" \
 fly apps create alpha-ticker-stage-a-hosted-sandboxes --org personal
 ```
 
+Pause again before setup or publication. Append only the newly created sandbox app to the approved `apps` list, re-run the mode-`0600` and ignore checks, and leave `sandboxRegistry` null until publication returns its separate immutable registry identifier. After publication, capture that registry identifier before planning. A partial inventory may contain only resources confirmed to exist; it must never contain placeholders or expected-but-uncreated resources.
+
 Run `"$QM_BIN" setup` a second time and add only the missing `FLY_SANDBOX_API_TOKEN`. Reassert mode and ignore protections, verify the pinned installation again, then publish and plan:
 
 ```bash
 cd "$HOSTED_ROOT"
+"${EDITOR:?set EDITOR to a secure local inventory editor}" "$INVENTORY_PATH"
+chmod 600 "$INVENTORY_PATH"
+git -C "$REPO_ROOT" check-ignore --quiet .generated/alpha-ticker-stage-a-hosted/resource-inventory.json
 node "$REPO_ROOT/scripts/alpha-ticker-stage-a-hosted/activation-record.mjs" \
   --verify-qm-install --root "$HOSTED_ROOT"
 "$QM_BIN" setup
@@ -146,6 +168,9 @@ node "$REPO_ROOT/scripts/alpha-ticker-stage-a-hosted/activation-record.mjs" \
   --verify-qm-install --root "$HOSTED_ROOT"
 "$QM_BIN" check
 "$QM_BIN" sandbox publish
+"${EDITOR:?set EDITOR to a secure local inventory editor}" "$INVENTORY_PATH"
+chmod 600 "$INVENTORY_PATH"
+git -C "$REPO_ROOT" check-ignore --quiet .generated/alpha-ticker-stage-a-hosted/resource-inventory.json
 "$QM_BIN" check
 "$QM_BIN" plan
 ```
@@ -188,52 +213,118 @@ curl -sS -o /dev/null -w '%{http_code}\n' https://example.com
 
 Expected output is exactly `403`. Any successful external fetch or different result stops the pilot.
 
-For the budget drill, freeze participant turns, set `ORG_BUDGET_USD_PER_WINDOW=0` through the approved local setup path, and deploy only core through the verified local executable:
+For the budget drill, freeze participant turns. The temporary brake is a one-field, reversible mutation of the tracked qconfig; do not use setup. **Pre-mutation boundary and policy checks** must pass while the committed value is `ORG_BUDGET_USD_PER_WINDOW=45`:
 
 ```bash
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 HOSTED_ROOT="$REPO_ROOT/deploy/layers/alpha-ticker-stage-a-hosted"
 QM_BIN="$HOSTED_ROOT/node_modules/.bin/qm"
+QCONFIG="$HOSTED_ROOT/qm.config.jsonc"
+DRILL_ROOT="$REPO_ROOT/.generated/alpha-ticker-stage-a-hosted"
+mkdir -p "$DRILL_ROOT"
+chmod 700 "$DRILL_ROOT"
+node "$REPO_ROOT/scripts/alpha-ticker-stage-a-hosted/check-boundary.mjs"
+node --test "$REPO_ROOT/test/alpha-ticker-stage-a-hosted-policy.test.ts" \
+  "$REPO_ROOT/test/alpha-ticker-stage-a-hosted-boundary.test.ts"
+node "$REPO_ROOT/scripts/alpha-ticker-stage-a-hosted/activation-record.mjs" \
+  --verify-qm-install --root "$HOSTED_ROOT"
+```
+
+Create a private byte-for-byte backup and pre-hash, install restoration traps, and replace exactly one hardcoded `"ORG_BUDGET_USD_PER_WINDOW": "45"` with `"ORG_BUDGET_USD_PER_WINDOW": "0"`. This is the temporary `ORG_BUDGET_USD_PER_WINDOW=0` deployment state. The mutation is atomic and prints no config content:
+
+```bash
+BUDGET_BACKUP="$(mktemp "$DRILL_ROOT/qconfig-budget.XXXXXX")"
+chmod 600 "$BUDGET_BACKUP"
+cp "$QCONFIG" "$BUDGET_BACKUP"
+QCONFIG_PRE_SHA256="$(shasum -a 256 "$QCONFIG" | awk '{ print $1 }')"
+export QCONFIG
+
+restore_budget_config() {
+  cp "$BUDGET_BACKUP" "$QCONFIG"
+  cmp -s "$BUDGET_BACKUP" "$QCONFIG"
+  test "$(shasum -a 256 "$QCONFIG" | awk '{ print $1 }')" = "$QCONFIG_PRE_SHA256"
+}
+abort_budget_drill() {
+  restore_budget_config
+  trap - EXIT HUP INT TERM
+  exit 1
+}
+trap restore_budget_config EXIT
+trap abort_budget_drill HUP INT TERM
+
+node --input-type=module <<'NODE'
+import { readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+
+const path = process.env.QCONFIG;
+if (!path) throw new Error("missing qconfig path");
+const source = readFileSync(path, "utf8");
+const from = '"ORG_BUDGET_USD_PER_WINDOW": "45"';
+const to = '"ORG_BUDGET_USD_PER_WINDOW": "0"';
+const replacementCount = source.split(from).length - 1;
+if (replacementCount !== 1 || source.includes(to)) throw new Error("budget mutation refused");
+const updated = source.replace(from, to);
+if (updated.includes(from) || updated.split(to).length - 1 !== 1) throw new Error("budget mutation invalid");
+const temporary = `${path}.budget-drill.${process.pid}`;
+writeFileSync(temporary, updated, { flag: "wx", mode: statSync(path).mode & 0o777 });
+renameSync(temporary, path);
+NODE
+
 node "$REPO_ROOT/scripts/alpha-ticker-stage-a-hosted/activation-record.mjs" \
   --verify-qm-install --root "$HOSTED_ROOT"
 cd "$HOSTED_ROOT"
-"$QM_BIN" setup
-chmod 600 "$HOSTED_ROOT/.env"
-git -C "$REPO_ROOT" check-ignore --quiet deploy/layers/alpha-ticker-stage-a-hosted/.env
-node "$REPO_ROOT/scripts/alpha-ticker-stage-a-hosted/activation-record.mjs" \
-  --verify-qm-install --root "$HOSTED_ROOT"
 "$QM_BIN" up --only core
 ```
 
-The next synthetic turn must be denied before any provider request. Restore `ORG_BUDGET_USD_PER_WINDOW=45` immediately through the same approved local path, verify the install again, deploy core, and revalidate:
+The next synthetic turn must be denied before any provider request. Do not run another turn. Immediately restore the exact original bytes, prove the original hash and single `45` value, clear the traps, rerun policy checks, redeploy core, and revalidate:
 
 ```bash
+restore_budget_config
+trap - EXIT HUP INT TERM
+node --input-type=module <<'NODE'
+import { readFileSync } from "node:fs";
+
+const source = readFileSync(process.env.QCONFIG, "utf8");
+const restored = '"ORG_BUDGET_USD_PER_WINDOW": "45"';
+const temporary = '"ORG_BUDGET_USD_PER_WINDOW": "0"';
+if (source.split(restored).length - 1 !== 1 || source.includes(temporary)) {
+  throw new Error("budget restoration invalid");
+}
+NODE
+node "$REPO_ROOT/scripts/alpha-ticker-stage-a-hosted/check-boundary.mjs"
+node --test "$REPO_ROOT/test/alpha-ticker-stage-a-hosted-policy.test.ts" \
+  "$REPO_ROOT/test/alpha-ticker-stage-a-hosted-boundary.test.ts"
 node "$REPO_ROOT/scripts/alpha-ticker-stage-a-hosted/activation-record.mjs" \
   --verify-qm-install --root "$HOSTED_ROOT"
-"$QM_BIN" setup
-chmod 600 "$HOSTED_ROOT/.env"
-git -C "$REPO_ROOT" check-ignore --quiet deploy/layers/alpha-ticker-stage-a-hosted/.env
-node "$REPO_ROOT/scripts/alpha-ticker-stage-a-hosted/activation-record.mjs" \
-  --verify-qm-install --root "$HOSTED_ROOT"
+cd "$HOSTED_ROOT"
 "$QM_BIN" up --only core
 "$QM_BIN" doctor
 "$QM_BIN" check --live
 "$QM_BIN" conformance
-node "$REPO_ROOT/scripts/alpha-ticker-stage-a-hosted/check-boundary.mjs"
-node --test "$REPO_ROOT/test/alpha-ticker-stage-a-hosted-policy.test.ts" \
-  "$REPO_ROOT/test/alpha-ticker-stage-a-hosted-boundary.test.ts"
+test -z "$(git -C "$REPO_ROOT" status --porcelain --untracked-files=no)"
+rm -- "$BUDGET_BACKUP"
 ```
 
-Never commit the temporary zero-budget setting. For the provider-key drill, revoke only the dedicated pilot key and prove the next turn fails while unrelated projects remain unaffected. Then replace the revoked key in the same dedicated provider project through the approved write-only setup path and recover with:
+Do not commit any budget-drill state. A failed restoration, hash comparison, policy test, deployment check, or clean tracked-worktree check stops the pilot.
+
+For the provider-key drill, revoke only the dedicated pilot key and prove the next turn fails while unrelated projects remain unaffected, then replace the revoked key manually in the existing private `.env` using a secure local editor configured for in-place writes with no swap, backup, shell-history value, terminal output, or cloud synchronization. Provider-key replacement must not use `"$QM_BIN" setup`. Verify the file is the same regular inode, mode `0600`, and ignored before pushing:
 
 ```bash
-node "$REPO_ROOT/scripts/alpha-ticker-stage-a-hosted/activation-record.mjs" \
-  --verify-qm-install --root "$HOSTED_ROOT"
-"$QM_BIN" setup
-chmod 600 "$HOSTED_ROOT/.env"
+ENV_PATH="$HOSTED_ROOT/.env"
+test -f "$ENV_PATH"
+test ! -L "$ENV_PATH"
+chmod 600 "$ENV_PATH"
+git -C "$REPO_ROOT" check-ignore --quiet deploy/layers/alpha-ticker-stage-a-hosted/.env
+ENV_DEVICE_INODE_BEFORE="$(stat -f '%d:%i' "$ENV_PATH")"
+umask 077
+"${EDITOR:?set EDITOR to a secure in-place local editor}" "$ENV_PATH"
+test -f "$ENV_PATH"
+test ! -L "$ENV_PATH"
+test "$(stat -f '%d:%i' "$ENV_PATH")" = "$ENV_DEVICE_INODE_BEFORE"
+test "$(stat -f '%Lp' "$ENV_PATH")" = "600"
 git -C "$REPO_ROOT" check-ignore --quiet deploy/layers/alpha-ticker-stage-a-hosted/.env
 node "$REPO_ROOT/scripts/alpha-ticker-stage-a-hosted/activation-record.mjs" \
   --verify-qm-install --root "$HOSTED_ROOT"
+cd "$HOSTED_ROOT"
 "$QM_BIN" secrets push
 "$QM_BIN" up --only core
 "$QM_BIN" doctor
@@ -273,10 +364,12 @@ Any identity, isolation, egress, secret, data-class, revocation, or scope failur
 
 ### Gate H5: Evidence, Revocation, Teardown, Decision
 
-Generate the aggregate-only manifest before deleting state:
+Generate the aggregate-only manifest before deleting state. Early-stop collection is supported with a missing ledger or any sample from 0 through 14 only when the complete H2/H3 register is non-passing; the collector writes a non-passing manifest and returns nonzero. Preserve that manifest rather than treating the nonzero status as a collection failure:
 
 ```bash
-node scripts/alpha-ticker-stage-a-hosted/collect-evidence.mjs
+EVIDENCE_EXIT=0
+node scripts/alpha-ticker-stage-a-hosted/collect-evidence.mjs || EVIDENCE_EXIT=$?
+test -f .generated/alpha-ticker-stage-a-hosted/evidence-manifest.json
 chmod 600 .generated/alpha-ticker-stage-a-hosted/evidence-manifest.json
 ```
 
@@ -288,6 +381,42 @@ Verify `contentCaptured: false`, calculate the manifest SHA-256 independently, a
 4. Freeze all remaining turns.
 5. Destroy only the fixed resources.
 
+Create the ignored mode-`0600` deletion-evidence file before the first H5 teardown dry-run or execute, with both deletion booleans `false` and both timestamps `null`. Its initial exact shape is:
+
+```json
+{
+  "managedPostgresDeleted": false,
+  "objectStorageDeleted": false,
+  "managedPostgresDeletedAt": null,
+  "objectStorageDeletedAt": null
+}
+```
+
+Create it without overwriting prior evidence:
+
+```bash
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+TEARDOWN_EVIDENCE="$REPO_ROOT/.generated/alpha-ticker-stage-a-hosted/teardown-evidence.json"
+export TEARDOWN_EVIDENCE
+umask 077
+node --input-type=module <<'NODE'
+import { writeFileSync } from "node:fs";
+
+const value = {
+  managedPostgresDeleted: false,
+  objectStorageDeleted: false,
+  managedPostgresDeletedAt: null,
+  objectStorageDeletedAt: null,
+};
+writeFileSync(process.env.TEARDOWN_EVIDENCE, `${JSON.stringify(value, null, 2)}\n`, {
+  flag: "wx",
+  mode: 0o600,
+});
+NODE
+chmod 600 "$TEARDOWN_EVIDENCE"
+git -C "$REPO_ROOT" check-ignore --quiet .generated/alpha-ticker-stage-a-hosted/teardown-evidence.json
+```
+
 Plan and execute fixed-resource teardown with:
 
 ```bash
@@ -296,9 +425,43 @@ STAGE_A_DESTROY_CONFIRM=alpha-ticker-stage-a-hosted \
   bash scripts/alpha-ticker-stage-a-hosted/teardown.sh --execute
 ```
 
-The teardown uses the verified repository-local QM binary for `down`, then destroys each exact Fly app individually. The bounded status `manual-data-destruction-required` is expected while either separately managed data resource exists.
+Before any provider command, teardown cryptographically verifies the exact lockfile-pinned QM package tree, including the executable target. It runs QM and Fly subprocesses through hardened process-group timeouts. It then uses the verified repository-local QM binary for `down` and destroys each captured exact Fly app individually. The bounded status `manual-data-destruction-required` is expected while either separately managed data resource exists.
 
-Use the ignored, mode-`0600` resource inventory in the sponsor-controlled Fly dashboard to delete Managed Postgres `alpha-ticker-stage-a-hosted-pg` and Tigris object storage `alpha-ticker-stage-a-hosted-data`. Record only deletion booleans and timestamps in `.generated/alpha-ticker-stage-a-hosted/teardown-evidence.json`. Re-run teardown, independently prove every exact resource and sandbox is absent, verify the retained manifest hash, and delete the raw inventory.
+Use the ignored, mode-`0600` resource inventory in the sponsor-controlled Fly dashboard to delete Managed Postgres `alpha-ticker-stage-a-hosted-pg` and Tigris object storage `alpha-ticker-stage-a-hosted-data`. Only after both manual deletions are independently confirmed, update both deletion booleans to `true` and record UTC deletion timestamps:
+
+```bash
+node --input-type=module <<'NODE'
+import { readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+
+const path = process.env.TEARDOWN_EVIDENCE;
+const current = JSON.parse(readFileSync(path, "utf8"));
+if (
+  current.managedPostgresDeleted !== false ||
+  current.objectStorageDeleted !== false ||
+  current.managedPostgresDeletedAt !== null ||
+  current.objectStorageDeletedAt !== null
+) {
+  throw new Error("teardown evidence transition refused");
+}
+const timestamp = new Date().toISOString();
+const next = {
+  managedPostgresDeleted: true,
+  objectStorageDeleted: true,
+  managedPostgresDeletedAt: timestamp,
+  objectStorageDeletedAt: timestamp,
+};
+const temporary = `${path}.${process.pid}`;
+writeFileSync(temporary, `${JSON.stringify(next, null, 2)}\n`, {
+  flag: "wx",
+  mode: statSync(path).mode & 0o777,
+});
+renameSync(temporary, path);
+NODE
+chmod 600 "$TEARDOWN_EVIDENCE"
+git -C "$REPO_ROOT" check-ignore --quiet .generated/alpha-ticker-stage-a-hosted/teardown-evidence.json
+```
+
+Re-run teardown, independently prove every exact resource and sandbox is absent, verify the retained manifest hash, and delete the raw inventory.
 
 Complete the decision memo with exactly one permitted outcome: `stop`, `repeat-synthetic`, or `design-stage-b`. No outcome authorizes production access.
 

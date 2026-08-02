@@ -22,6 +22,14 @@ function requireAll(text: string, required: readonly string[], label: string): v
   for (const value of required) assert.ok(text.includes(value), `${label} must contain: ${value}`);
 }
 
+function section(text: string, start: string, end: string): string {
+  const startIndex = text.indexOf(start);
+  const endIndex = text.indexOf(end, startIndex + start.length);
+  assert.ok(startIndex >= 0, `missing section start: ${start}`);
+  assert.ok(endIndex > startIndex, `missing section end: ${end}`);
+  return text.slice(startIndex, endIndex);
+}
+
 test("hosted runbook defines the complete H0-H5 operating boundary", () => {
   const runbook = readDocument("runbook.md");
 
@@ -152,16 +160,133 @@ test("hosted runbook defines the complete H0-H5 operating boundary", () => {
   const firstQmCommand = runbook.indexOf('"$QM_BIN" check');
   const preflight = runbook.indexOf("bash scripts/alpha-ticker-stage-a-hosted/preflight.sh");
   const firstFlyMutation = runbook.indexOf("fly apps create alpha-ticker-stage-a-egress --org personal");
-  const setupCount = runbook.match(/^"\$QM_BIN" setup$/gm)?.length ?? 0;
-  const modeCheckCount = runbook.match(/^chmod 600 "\$HOSTED_ROOT\/\.env"$/gm)?.length ?? 0;
-  const ignoreCheckCount =
-    runbook.match(/^git -C "\$REPO_ROOT" check-ignore --quiet deploy\/layers\/alpha-ticker-stage-a-hosted\/\.env$/gm)
-      ?.length ?? 0;
   assert.ok(verifier >= 0 && verifier < firstQmCommand, "local QM verification must precede QM commands");
   assert.ok(preflight >= 0 && preflight < firstFlyMutation, "H0 preflight must precede Fly mutation");
-  assert.equal(setupCount, 5, "H0, H1, both budget transitions, and key replacement must use local setup");
-  assert.equal(modeCheckCount, 5, "every local setup must restore mode 0600");
-  assert.equal(ignoreCheckCount, 5, "every local setup must recheck that the input is ignored");
+});
+
+test("H0 and H1 protect identity inputs and capture progressive private inventory", () => {
+  const runbook = readDocument("runbook.md");
+  const h0 = section(runbook, "### Gate H0", "### Gate H1");
+  const h1 = section(runbook, "### Gate H1", "### Gate H2");
+
+  requireAll(
+    h0,
+    [
+      "ADMIN_GRANTS",
+      "AUTH_ALLOWED_EMAILS",
+      "directly in the private `.env` before setup",
+      '"$QM_BIN" setup </dev/null >/dev/null 2>&1',
+      "validation-only",
+      "must not derive one identity list from the other",
+      "Identity output may never be retained",
+      'chmod 600 "$HOSTED_ROOT/.env"',
+      'git -C "$REPO_ROOT" check-ignore --quiet deploy/layers/alpha-ticker-stage-a-hosted/.env',
+    ],
+    "H0 identity setup",
+  );
+
+  requireAll(
+    h1,
+    [
+      ".generated/alpha-ticker-stage-a-hosted/resource-inventory.json",
+      "partial inventory",
+      "immediately after each successful create and before the next cloud mutation",
+      "mode `0600`",
+      "ignored",
+      "teardown",
+    ],
+    "H1 progressive inventory",
+  );
+
+  assert.equal(runbook.match(/^"\$QM_BIN" setup(?: <\/dev\/null >\/dev\/null 2>&1)?$/gm)?.length ?? 0, 2);
+});
+
+test("H3 uses a reversible qconfig drill and manual in-place provider-key replacement", () => {
+  const runbook = readDocument("runbook.md");
+  const h3 = section(runbook, "### Gate H3", "### Gate H4");
+
+  requireAll(
+    h3,
+    [
+      'QCONFIG="$HOSTED_ROOT/qm.config.jsonc"',
+      'BUDGET_BACKUP="$(mktemp',
+      'chmod 600 "$BUDGET_BACKUP"',
+      "QCONFIG_PRE_SHA256",
+      "restore_budget_config",
+      "trap restore_budget_config EXIT",
+      "trap abort_budget_drill HUP INT TERM",
+      '"ORG_BUDGET_USD_PER_WINDOW": "45"',
+      '"ORG_BUDGET_USD_PER_WINDOW": "0"',
+      "replacementCount !== 1",
+      "Pre-mutation boundary and policy checks",
+      "The next synthetic turn must be denied before any provider request",
+      'cmp -s "$BUDGET_BACKUP" "$QCONFIG"',
+      "restore the exact original bytes",
+      '"$QM_BIN" up --only core',
+      '"$QM_BIN" doctor',
+      '"$QM_BIN" check --live',
+      '"$QM_BIN" conformance',
+      'test -z "$(git -C "$REPO_ROOT" status --porcelain --untracked-files=no)"',
+      "Do not commit any budget-drill state",
+      "secure local editor",
+      "ENV_DEVICE_INODE_BEFORE",
+      "stat -f '%d:%i'",
+      'must not use `"$QM_BIN" setup`',
+      '"$QM_BIN" secrets push',
+    ],
+    "H3 safe mutation",
+  );
+
+  assert.doesNotMatch(h3, /^"\$QM_BIN" setup(?:\s|$)/m);
+  assert.ok(h3.indexOf("Pre-mutation boundary and policy checks") < h3.indexOf("replacementCount !== 1"));
+  assert.ok(h3.indexOf("replacementCount !== 1") < h3.indexOf("denied before any provider request"));
+  assert.ok(h3.indexOf("denied before any provider request") < h3.indexOf("restore the exact original bytes"));
+  assert.ok(h3.indexOf("restore the exact original bytes") < h3.lastIndexOf('"$QM_BIN" up --only core'));
+});
+
+test("H5 initializes deletion evidence and documents early-stop and cryptographic teardown semantics", () => {
+  const runbook = readDocument("runbook.md");
+  const index = readDocument("evidence-index.md");
+  const limitations = readDocument("limitations.md");
+  const h5 = section(runbook, "### Gate H5", "## Incident Stop Conditions");
+
+  requireAll(
+    h5,
+    [
+      "before the first H5 teardown dry-run or execute",
+      'TEARDOWN_EVIDENCE="$REPO_ROOT/.generated/alpha-ticker-stage-a-hosted/teardown-evidence.json"',
+      '"managedPostgresDeleted": false',
+      '"objectStorageDeleted": false',
+      '"managedPostgresDeletedAt": null',
+      '"objectStorageDeletedAt": null',
+      'chmod 600 "$TEARDOWN_EVIDENCE"',
+      "update both deletion booleans to `true`",
+      "UTC deletion timestamps",
+      "cryptographically verifies the exact lockfile-pinned QM package tree",
+      "hardened process-group timeouts",
+    ],
+    "H5 teardown evidence",
+  );
+  assert.ok(h5.indexOf("before the first H5 teardown dry-run or execute") < h5.indexOf("teardown.sh --dry-run"));
+
+  requireAll(
+    index,
+    [
+      "zero through fourteen scored outputs",
+      "missing `scores.jsonl`",
+      "non-passing manifest",
+      "partial approved inventory",
+      "only when the H2/H3 register is non-passing",
+      "both deletion booleans begin `false`",
+      "change to `true` only after",
+    ],
+    "early-stop evidence",
+  );
+  requireAll(
+    limitations,
+    ["Early-stop evidence limitation", "non-passing decision evidence", "Cryptographic QM verification", "timeouts"],
+    "limitations",
+  );
 });
 
 test("hosted evidence index is aggregate-only and names every controlled artifact", () => {
