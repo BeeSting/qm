@@ -51,6 +51,30 @@ const CHECK_IDS = Object.freeze([
   "resource-inventory",
   "live-checks",
 ]);
+const LIVE_CHECK_IDS = Object.freeze([
+  "h2-qm-doctor",
+  "h2-qm-live-check",
+  "h2-qm-conformance",
+  "h2-egress-allowlist",
+  "h2-model-harness-provider",
+  "h2-connectors-unconfigured",
+  "h2-prohibited-capabilities-absent",
+  "h2-identity-admission",
+  "h2-personal-scope-isolation",
+  "h2-synthetic-advisory-response",
+  "h2-durable-personal-computer",
+  "h2-idempotent-deployment",
+  "h3-sandbox-egress-denial",
+  "h3-alpha-packet-allowed",
+  "h3-shared-room-access",
+  "h3-shared-room-revocation",
+  "h3-zero-budget-denial",
+  "h3-budget-restored",
+  "h3-provider-key-revocation-isolation",
+  "h3-model-health-recovery",
+  "h3-exact-teardown-plan",
+  "h3-inventory-ownership",
+]);
 const FORBIDDEN_KEYS = new Set([
   "prompt",
   "response",
@@ -88,6 +112,17 @@ const SCORE_KEYS = [
 ];
 const SPEND_KEYS = ["allTurnModelCostUsd", "flyCostUsd", "scoredOutputCostUsd", "totalCostUsd"];
 const LIVE_CHECK_KEYS = ["id", "status", "timestamp", "revision", "resourceNameSha256"];
+const EXPECTED_UPSTREAM_LOCK = Object.freeze({
+  repository: "https://github.com/yc-software/qm.git",
+  commit: "7f2c916360f1797a8ff2a77ce2ce40c5fabab087",
+  package: "@yc-software/qm@0.1.4",
+  node: "24.18.1",
+  npm: "11.16.0",
+  reviewedAt: "2026-08-01",
+  implementedAt: "2026-08-02",
+  stage: "A",
+  dataClass: "public-synthetic-only",
+});
 const EXPECTED_POLICY = Object.freeze({
   stage: "A-hosted",
   dataClass: "public-synthetic-only",
@@ -300,12 +335,13 @@ function sameIdentity(left, right) {
     left.dev === right.dev &&
     left.ino === right.ino &&
     left.size === right.size &&
+    left.mode === right.mode &&
     left.mtimeNs === right.mtimeNs &&
     left.ctimeNs === right.ctimeNs
   );
 }
 
-function snapshotRegularFile(id, path, maxBytes = MAX_INPUT_BYTES, hooks = {}) {
+function snapshotRegularFile(id, path, maxBytes = MAX_INPUT_BYTES, hooks = {}, { requiredMode } = {}) {
   let before;
   try {
     before = lstatSync(path, { bigint: true });
@@ -313,6 +349,7 @@ function snapshotRegularFile(id, path, maxBytes = MAX_INPUT_BYTES, hooks = {}) {
     fail("input invalid");
   }
   if (before.isSymbolicLink() || !before.isFile() || before.size > BigInt(maxBytes)) fail("input invalid");
+  if (requiredMode !== undefined && Number(before.mode & 0o777n) !== requiredMode) fail("input invalid");
   if (!Number.isInteger(constants.O_NOFOLLOW)) fail("input invalid");
 
   let descriptor;
@@ -321,6 +358,7 @@ function snapshotRegularFile(id, path, maxBytes = MAX_INPUT_BYTES, hooks = {}) {
     descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     const opened = fstatSync(descriptor, { bigint: true });
     if (!opened.isFile() || !sameIdentity(before, opened) || opened.size > BigInt(maxBytes)) fail("input invalid");
+    if (requiredMode !== undefined && Number(opened.mode & 0o777n) !== requiredMode) fail("input invalid");
     hooks.afterOpen?.(id, path);
     const buffer = Buffer.allocUnsafe(maxBytes + 1);
     let total = 0;
@@ -334,6 +372,7 @@ function snapshotRegularFile(id, path, maxBytes = MAX_INPUT_BYTES, hooks = {}) {
     const afterPath = lstatSync(path, { bigint: true });
     if (afterPath.isSymbolicLink() || !afterPath.isFile() || !sameIdentity(opened, afterPath)) fail("input invalid");
     bytes = Buffer.from(buffer.subarray(0, total));
+    before = opened;
   } catch (error) {
     if (error instanceof EvidenceError) throw error;
     fail("input invalid");
@@ -346,7 +385,12 @@ function snapshotRegularFile(id, path, maxBytes = MAX_INPUT_BYTES, hooks = {}) {
       }
     }
   }
-  const snapshot = Object.freeze({ bytes, hash: sha256(bytes) });
+  const snapshot = Object.freeze({
+    bytes,
+    hash: sha256(bytes),
+    mode: Number(before.mode & 0o777n),
+    size: Number(before.size),
+  });
   try {
     hooks.afterSnapshot?.(id);
   } catch {
@@ -381,11 +425,42 @@ function assertPlainJson(value, kind = "input invalid", seen = new WeakSet()) {
 }
 
 function deepExact(value, expected, kind) {
-  if (JSON.stringify(value) !== JSON.stringify(expected)) fail(kind);
+  if (Object.is(value, expected)) return;
+
+  if (Array.isArray(expected)) {
+    if (!Array.isArray(value) || value.length !== expected.length) fail(kind);
+    for (let index = 0; index < expected.length; index += 1) {
+      deepExact(value[index], expected[index], kind);
+    }
+    return;
+  }
+
+  if (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    typeof expected === "object" &&
+    expected !== null
+  ) {
+    const expectedKeys = Object.keys(expected);
+    exactOwnKeys(value, expectedKeys, kind);
+    for (const key of expectedKeys) deepExact(value[key], expected[key], kind);
+    return;
+  }
+
+  fail(kind);
 }
 
 function validatePolicy(snapshot) {
   deepExact(parseSnapshotJson(snapshot, "policy invalid"), EXPECTED_POLICY, "policy invalid");
+}
+
+function validateUpstreamLock(snapshot) {
+  const value = parseSnapshotJson(snapshot);
+  exactOwnKeys(value, Object.keys(EXPECTED_UPSTREAM_LOCK), "input invalid");
+  assertSha1(value.commit, "qmBaseline");
+  deepExact(value, EXPECTED_UPSTREAM_LOCK, "input invalid");
+  return value;
 }
 
 function scanJsonString(text, index) {
@@ -574,15 +649,19 @@ function validateInventory(snapshot) {
 function parseLiveChecks(snapshot) {
   const value = parseSnapshotJson(snapshot);
   exactOwnKeys(value, ["checks", "spendSummary"], "input invalid");
-  if (!Array.isArray(value.checks) || value.checks.length < 1 || value.checks.length > 128) fail("input invalid");
+  if (!Array.isArray(value.checks) || value.checks.length !== LIVE_CHECK_IDS.length) fail("live-checks invalid");
+  const ids = new Set();
   for (const check of value.checks) {
     exactOwnKeys(check, LIVE_CHECK_KEYS, "input invalid");
     if (typeof check.id !== "string" || !/^[a-z][a-z0-9-]{1,63}$/.test(check.id)) fail("input invalid");
-    if (check.status !== "pass" && check.status !== "fail") fail("input invalid");
+    if (check.status !== "pass") fail("live-checks invalid");
     if (typeof check.timestamp !== "string" || !Number.isFinite(Date.parse(check.timestamp))) fail("input invalid");
     if (typeof check.revision !== "string" || check.revision.trim() === "") fail("input invalid");
     assertSha256(check.resourceNameSha256, "input invalid");
+    if (!LIVE_CHECK_IDS.includes(check.id) || ids.has(check.id)) fail("live-checks invalid");
+    ids.add(check.id);
   }
+  if (LIVE_CHECK_IDS.some((id) => !ids.has(id))) fail("live-checks invalid");
   exactOwnKeys(value.spendSummary, ["allTurnModelCostUsd", "flyCostUsd", "totalCostUsd"], "input invalid");
   for (const field of ["allTurnModelCostUsd", "flyCostUsd", "totalCostUsd"]) {
     assertNonNegativeFinite(value.spendSummary[field], "input invalid");
@@ -636,7 +715,7 @@ function listSandboxFiles(root, current = root, files = []) {
     }
     if (stat.isSymbolicLink()) fail("sandbox bundle invalid");
     if (stat.isDirectory()) listSandboxFiles(root, path, files);
-    else if (stat.isFile()) files.push({ path, size: stat.size, mode: stat.mode & 0o777 });
+    else if (stat.isFile()) files.push(path);
     else fail("sandbox bundle invalid");
     if (files.length > MAX_SANDBOX_FILES) fail("sandbox bundle invalid");
   }
@@ -645,12 +724,17 @@ function listSandboxFiles(root, current = root, files = []) {
 
 function sandboxDigest(root, hooks) {
   const files = listSandboxFiles(root);
+  try {
+    hooks.afterSandboxList?.();
+  } catch {
+    fail("sandbox bundle invalid");
+  }
   let totalBytes = 0;
-  const index = files.map(({ path, size, mode }) => {
-    totalBytes += size;
-    if (totalBytes > MAX_SANDBOX_BYTES || size > MAX_ARTIFACT_BYTES) fail("sandbox bundle invalid");
+  const index = files.map((path) => {
     const snapshot = snapshotRegularFile(`sandbox:${relative(root, path)}`, path, MAX_ARTIFACT_BYTES, hooks);
-    return `${relative(root, path)}:${mode.toString(8)}:${snapshot.hash}`;
+    totalBytes += snapshot.size;
+    if (totalBytes > MAX_SANDBOX_BYTES) fail("sandbox bundle invalid");
+    return `${relative(root, path)}:${snapshot.mode.toString(8)}:${snapshot.hash}`;
   });
   const digest = sha256(index.join("\n"));
   try {
@@ -659,6 +743,39 @@ function sandboxDigest(root, hooks) {
     fail("sandbox bundle invalid");
   }
   return digest;
+}
+
+function snapshotRepositoryEvidenceInputs(root, hooks = {}) {
+  const deployment = ensureWithinRoot(root, join(root, "deploy/layers/alpha-ticker-stage-a-hosted"), "input invalid");
+  const snapshots = {
+    baseline: snapshotRegularFile("qm-baseline", join(root, "UPSTREAM.lock.json"), MAX_INPUT_BYTES, hooks),
+    policy: snapshotRegularFile(
+      "hosted-policy",
+      join(deployment, "stage-a-hosted-policy.json"),
+      MAX_INPUT_BYTES,
+      hooks,
+    ),
+    config: snapshotRegularFile("hosted-config", join(deployment, "qm.config.jsonc"), MAX_INPUT_BYTES, hooks),
+    egress: snapshotRegularFile(
+      "egress-proxy-config",
+      join(deployment, "egress-proxy.fly.toml"),
+      MAX_INPUT_BYTES,
+      hooks,
+    ),
+  };
+  const baseline = validateUpstreamLock(snapshots.baseline);
+  validatePolicy(snapshots.policy);
+  validateConfig(snapshots.config);
+  validateEgress(snapshots.egress);
+  const digest = sandboxDigest(join(deployment, "sandbox"), hooks);
+  return { baseline, deployment, digest, snapshots };
+}
+
+export function validateRepositoryEvidenceInputs({
+  repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../.."),
+} = {}) {
+  const repository = snapshotRepositoryEvidenceInputs(resolve(repoRoot));
+  return Object.freeze({ qmBaseline: repository.baseline.commit, sandboxDigest: repository.digest });
 }
 
 function ensureWithinRoot(root, path, kind) {
@@ -779,41 +896,32 @@ export function collectEvidence({
   output,
   afterOpen,
   afterSnapshot,
+  afterSandboxList,
 } = {}) {
   const root = resolve(repoRoot);
-  const deployment = ensureWithinRoot(root, join(root, "deploy/layers/alpha-ticker-stage-a-hosted"), "input invalid");
   const generated = ensureWithinRoot(root, join(root, ".generated/alpha-ticker-stage-a-hosted"), "input invalid");
   const outputPath = ensureWithinRoot(root, output ?? join(root, DEFAULT_OUTPUT), "output invalid");
   if (outputPath !== join(generated, "evidence-manifest.json")) fail("output invalid");
-  const hooks = { afterOpen, afterSnapshot };
+  const hooks = { afterOpen, afterSnapshot, afterSandboxList };
+  const repository = snapshotRepositoryEvidenceInputs(root, hooks);
   const paths = {
-    baseline: join(root, "UPSTREAM.lock.json"),
     activation: join(generated, "activation.json"),
-    policy: join(deployment, "stage-a-hosted-policy.json"),
-    config: join(deployment, "qm.config.jsonc"),
-    egress: join(deployment, "egress-proxy.fly.toml"),
     ledger: join(generated, "scores.jsonl"),
     inventory: join(generated, "resource-inventory.json"),
     liveChecks: join(generated, "live-checks.json"),
   };
   const snapshotIds = {
-    baseline: "qm-baseline",
     activation: "activation-record",
-    policy: "hosted-policy",
-    config: "hosted-config",
-    egress: "egress-proxy-config",
     ledger: "evaluation-ledger",
     inventory: "resource-inventory",
     liveChecks: "live-checks",
   };
   const snapshots = {};
   for (const [id, path] of Object.entries(paths)) {
-    snapshots[id] = snapshotRegularFile(snapshotIds[id], path, MAX_INPUT_BYTES, hooks);
+    snapshots[id] = snapshotRegularFile(snapshotIds[id], path, MAX_INPUT_BYTES, hooks, { requiredMode: 0o600 });
   }
 
-  const baseline = parseSnapshotJson(snapshots.baseline);
-  exactOwnKeys(baseline, ["commit"], "input invalid");
-  assertSha1(baseline.commit, "qmBaseline");
+  const baseline = repository.baseline;
   const resolvedCommit = commit ?? execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
   assertSha1(resolvedCommit, "commit");
   if (typeof timestamp !== "string" || !Number.isFinite(Date.parse(timestamp))) fail("timestamp");
@@ -824,21 +932,18 @@ export function collectEvidence({
   } catch {
     fail("activation invalid");
   }
-  validatePolicy(snapshots.policy);
-  validateConfig(snapshots.config);
-  validateEgress(snapshots.egress);
   validateInventory(snapshots.inventory);
   const liveChecks = parseLiveChecks(snapshots.liveChecks);
   const scoreSummary = parseScoreLedger(snapshots.ledger);
   if (scoreSummary.sampleSize !== 15) fail("scoreSummary");
   if (liveChecks.spendSummary.allTurnModelCostUsd < scoreSummary.totalCostUsd) fail("spendSummary");
 
-  const digest = sandboxDigest(join(deployment, "sandbox"), hooks);
+  const digest = repository.digest;
   const checks = [
     { id: "activation-record", status: "pass", artifactSha256: snapshots.activation.hash },
-    { id: "hosted-policy", status: "pass", artifactSha256: snapshots.policy.hash },
-    { id: "hosted-config", status: "pass", artifactSha256: snapshots.config.hash },
-    { id: "egress-proxy-config", status: "pass", artifactSha256: snapshots.egress.hash },
+    { id: "hosted-policy", status: "pass", artifactSha256: repository.snapshots.policy.hash },
+    { id: "hosted-config", status: "pass", artifactSha256: repository.snapshots.config.hash },
+    { id: "egress-proxy-config", status: "pass", artifactSha256: repository.snapshots.egress.hash },
     { id: "sandbox-bundle", status: "pass", artifactSha256: digest },
     { id: "evaluation-ledger", status: scoreSummary.pass ? "pass" : "fail", artifactSha256: snapshots.ledger.hash },
     { id: "resource-inventory", status: "pass", artifactSha256: snapshots.inventory.hash },

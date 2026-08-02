@@ -18,7 +18,9 @@ import { dirname, join, resolve } from "node:path";
 import { test } from "node:test";
 
 // @ts-expect-error -- Task 8 intentionally exposes an .mjs CLI without a separate declaration file.
-import { assertEvidenceSafe, collectEvidence } from "../scripts/alpha-ticker-stage-a-hosted/collect-evidence.mjs";
+import * as evidenceModule from "../scripts/alpha-ticker-stage-a-hosted/collect-evidence.mjs";
+
+const { assertEvidenceSafe, collectEvidence } = evidenceModule;
 
 const workflows = [
   "daily-portfolio-briefing",
@@ -46,7 +48,32 @@ const checkIds = [
   "resource-inventory",
   "live-checks",
 ];
+const liveCheckIds = [
+  "h2-qm-doctor",
+  "h2-qm-live-check",
+  "h2-qm-conformance",
+  "h2-egress-allowlist",
+  "h2-model-harness-provider",
+  "h2-connectors-unconfigured",
+  "h2-prohibited-capabilities-absent",
+  "h2-identity-admission",
+  "h2-personal-scope-isolation",
+  "h2-synthetic-advisory-response",
+  "h2-durable-personal-computer",
+  "h2-idempotent-deployment",
+  "h3-sandbox-egress-denial",
+  "h3-alpha-packet-allowed",
+  "h3-shared-room-access",
+  "h3-shared-room-revocation",
+  "h3-zero-budget-denial",
+  "h3-budget-restored",
+  "h3-provider-key-revocation-isolation",
+  "h3-model-health-recovery",
+  "h3-exact-teardown-plan",
+  "h3-inventory-ownership",
+];
 const hostedDeployment = resolve("deploy/layers/alpha-ticker-stage-a-hosted");
+const realUpstreamLock = JSON.parse(readFileSync(resolve("UPSTREAM.lock.json"), "utf8"));
 
 function sha256(value: string | Buffer): string {
   return createHash("sha256").update(value).digest("hex");
@@ -82,17 +109,19 @@ function writeJson(path: string, value: unknown, mode = 0o600) {
   chmodSync(path, mode);
 }
 
-function writeLiveChecks(generated: string, allTurnModelCostUsd = 4.5, flyCostUsd = 1.25) {
+function writeLiveChecks(
+  generated: string,
+  allTurnModelCostUsd = 4.5,
+  flyCostUsd = 1.25,
+  checks: Array<{ id: string; status: "pass" | "fail" }> = liveCheckIds.map((id) => ({ id, status: "pass" })),
+) {
   writeJson(join(generated, "live-checks.json"), {
-    checks: [
-      {
-        id: "hosted-conformance",
-        status: "pass",
-        timestamp: "2026-08-02T00:00:00.000Z",
-        revision: "revision-1",
-        resourceNameSha256: sha256("alpha-ticker-stage-a-hosted-core"),
-      },
-    ],
+    checks: checks.map((check) => ({
+      ...check,
+      timestamp: "2026-08-02T00:00:00.000Z",
+      revision: "revision-1",
+      resourceNameSha256: sha256(`alpha-ticker-stage-a-hosted:${check.id}`),
+    })),
     spendSummary: {
       allTurnModelCostUsd,
       flyCostUsd,
@@ -109,12 +138,14 @@ function createEvidenceFixture() {
   mkdirSync(join(sandbox, "skills", "workflow"), { recursive: true });
   mkdirSync(join(sandbox, "tools", "alpha-packet"), { recursive: true });
 
-  writeJson(join(root, "UPSTREAM.lock.json"), { commit: "b".repeat(40) }, 0o644);
+  writeJson(join(root, "UPSTREAM.lock.json"), realUpstreamLock, 0o644);
   for (const file of ["stage-a-hosted-policy.json", "qm.config.jsonc", "egress-proxy.fly.toml"]) {
     writeFileSync(join(deployment, file), readFileSync(join(hostedDeployment, file)));
   }
   writeFileSync(join(sandbox, "skills", "workflow", "SKILL.md"), "synthetic workflow\n");
   writeFileSync(join(sandbox, "tools", "alpha-packet", "tool.json"), '{"name":"alpha-packet"}\n');
+  chmodSync(join(sandbox, "skills", "workflow", "SKILL.md"), 0o644);
+  chmodSync(join(sandbox, "tools", "alpha-packet", "tool.json"), 0o644);
 
   writeJson(join(generated, "activation.json"), {
     sponsorApproved: true,
@@ -212,6 +243,54 @@ test("hosted evidence is exact-schema, aggregate-only, and content-minimized", (
   }
 });
 
+test("hosted evidence accepts the real nine-field upstream lock shape and rejects schema drift", () => {
+  const valid = createEvidenceFixture();
+  try {
+    const manifest = collect(valid);
+    assert.equal(manifest.qmBaseline, realUpstreamLock.commit);
+  } finally {
+    valid.cleanup();
+  }
+
+  const reordered = createEvidenceFixture();
+  try {
+    writeJson(
+      join(reordered.root, "UPSTREAM.lock.json"),
+      Object.fromEntries(Object.entries(realUpstreamLock).reverse()),
+      0o644,
+    );
+    assert.doesNotThrow(() => collect(reordered));
+  } finally {
+    reordered.cleanup();
+  }
+
+  for (const mutate of [
+    (value: Record<string, unknown>) => delete value.repository,
+    (value: Record<string, unknown>) => (value.extra = true),
+    (value: Record<string, unknown>) => (value.commit = "not-a-commit"),
+  ]) {
+    const fixture = createEvidenceFixture();
+    try {
+      const value = structuredClone(realUpstreamLock);
+      mutate(value);
+      writeJson(join(fixture.root, "UPSTREAM.lock.json"), value, 0o644);
+      assert.throws(() => collect(fixture), /evidence (?:input|qmBaseline)/i);
+    } finally {
+      fixture.cleanup();
+    }
+  }
+});
+
+test("committed repository inputs validate from the production root without generated live files", () => {
+  assert.equal(typeof evidenceModule.validateRepositoryEvidenceInputs, "function");
+  const result = evidenceModule.validateRepositoryEvidenceInputs({ repoRoot: resolve(".") });
+  assert.deepEqual(result, {
+    qmBaseline: realUpstreamLock.commit,
+    sandboxDigest: result.sandboxDigest,
+  });
+  assert.match(result.sandboxDigest, /^[a-f0-9]{64}$/);
+});
+
 test("hosted evidence uses the exact fixed eight validated check identifiers", () => {
   const fixture = createEvidenceFixture();
   try {
@@ -243,6 +322,37 @@ test("hosted evidence enforces the US$45 all-turn model brake and scored-spend f
       writeLiveChecks(fixture.generated, allTurnModelCostUsd, 1);
       if (shouldPass) assert.doesNotThrow(() => collect(fixture));
       else assert.throws(() => collect(fixture), /spendSummary/i);
+    } finally {
+      fixture.cleanup();
+    }
+  }
+});
+
+test("hosted evidence requires the exact complete passing H2 and H3 live-check register", () => {
+  const scenarios = [
+    liveCheckIds.slice(1).map((id) => ({ id, status: "pass" as const })),
+    [...liveCheckIds, "arbitrary-check"].map((id) => ({ id, status: "pass" as const })),
+    liveCheckIds.map((id, index) => ({ id, status: index === 4 ? ("fail" as const) : ("pass" as const) })),
+    liveCheckIds.map((id) => ({ id, status: "pass" as const })).reverse(),
+  ];
+  for (const checks of scenarios) {
+    const fixture = createEvidenceFixture();
+    try {
+      writeLiveChecks(fixture.generated, 4.5, 1.25, checks);
+      if (checks[0]?.id === liveCheckIds.at(-1)) assert.doesNotThrow(() => collect(fixture));
+      else assert.throws(() => collect(fixture), /evidence live-checks/i);
+    } finally {
+      fixture.cleanup();
+    }
+  }
+});
+
+test("hosted evidence requires private modes on runtime score, inventory, and live-check files", () => {
+  for (const relativePath of ["scores.jsonl", "resource-inventory.json", "live-checks.json"]) {
+    const fixture = createEvidenceFixture();
+    try {
+      chmodSync(join(fixture.generated, relativePath), 0o644);
+      assert.throws(() => collect(fixture), /evidence input/i);
     } finally {
       fixture.cleanup();
     }
@@ -336,6 +446,30 @@ test("hosted evidence rejects an inode replacement during an open artifact snaps
         }),
       /evidence input/i,
     );
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("sandbox digest takes changed mode, size, and bytes from the opened file snapshot", () => {
+  const fixture = createEvidenceFixture();
+  try {
+    const skillPath = join(fixture.deployment, "sandbox", "skills", "workflow", "SKILL.md");
+    const toolPath = join(fixture.deployment, "sandbox", "tools", "alpha-packet", "tool.json");
+    const changedSkill = "synthetic workflow changed after directory listing\n";
+    const manifest = collect(fixture, {
+      afterSandboxList() {
+        writeFileSync(skillPath, changedSkill);
+        chmodSync(skillPath, 0o600);
+      },
+    });
+    const expected = sha256(
+      [
+        `skills/workflow/SKILL.md:600:${sha256(changedSkill)}`,
+        `tools/alpha-packet/tool.json:644:${sha256(readFileSync(toolPath))}`,
+      ].join("\n"),
+    );
+    assert.equal(manifest.sandboxDigest, expected);
   } finally {
     fixture.cleanup();
   }

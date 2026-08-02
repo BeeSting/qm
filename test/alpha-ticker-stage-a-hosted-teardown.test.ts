@@ -43,6 +43,7 @@ interface TeardownScenario {
   mutateEvidenceAfterQmDown?: boolean;
   inventorySymlink?: boolean;
   evidenceSymlink?: boolean;
+  retainDestroyedApps?: boolean;
 }
 
 function createTeardownScenario(scenario: TeardownScenario = {}) {
@@ -143,13 +144,19 @@ function createTeardownScenario(scenario: TeardownScenario = {}) {
       Organization: scenario.flyOrg ?? "personal",
     })),
   );
+  const flyState = join(root, "fly-state.json");
+  const destroyedApps = join(root, "destroyed-apps.txt");
+  writeFileSync(flyState, scenario.flyJson ?? defaultFlyJson);
+  writeFileSync(destroyedApps, "");
   writeExecutable(
     join(shimRoot, "fly"),
     `${scenario.flySleepSeconds ? `sleep ${scenario.flySleepSeconds}\n` : ""}` +
       `printf 'fly:%s\\n' "$*" >> ${shellQuote(callLog)}\n` +
       `case "$*" in\n` +
-      `  "apps list --org personal --json") printf '%s\n' ${shellQuote(scenario.flyJson ?? defaultFlyJson)} ;;\n` +
-      `  "apps destroy "*" --yes") : ;;\n` +
+      `  "apps list --org personal --json") node -e ${shellQuote(
+        "const fs=require('node:fs');const all=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));const removed=new Set(fs.readFileSync(process.argv[2],'utf8').split('\\n').filter(Boolean));process.stdout.write(JSON.stringify(all.filter((entry)=>!removed.has(entry.Name))));",
+      )} ${shellQuote(flyState)} ${shellQuote(destroyedApps)} ;;\n` +
+      `  "apps destroy "*" --yes") ${scenario.retainDestroyedApps ? ":" : `printf '%s\\n' "$3" >> ${shellQuote(destroyedApps)}`} ;;\n` +
       `  *) exit 99 ;;\n` +
       `esac\n`,
   );
@@ -222,7 +229,7 @@ test("hosted teardown runs pinned local qm down before one-at-a-time Fly destruc
     const qmIndex = calls.indexOf("qm:down");
     const firstDestroy = calls.findIndex((line) => line.startsWith("fly:apps destroy "));
     assert.ok(qmIndex >= 0 && firstDestroy > qmIndex);
-    assert.equal(calls.filter((line) => line === "fly:apps list --org personal --json").length, apps.length + 1);
+    assert.equal(calls.filter((line) => line === "fly:apps list --org personal --json").length, apps.length + 2);
     assert.deepEqual(
       calls.filter((line) => line.startsWith("fly:apps destroy ")),
       apps.map((app) => `fly:apps destroy ${app} --yes`),
@@ -341,6 +348,22 @@ test("hosted teardown accepts completion only after both minimized deletion stat
     assert.equal(complete.stderr, "");
   } finally {
     complete.cleanup();
+  }
+});
+
+test("hosted teardown refuses completion when a captured immutable app remains after destruction", () => {
+  const result = createTeardownScenario({
+    managedPostgresDeleted: true,
+    objectStorageDeleted: true,
+    retainDestroyedApps: true,
+  });
+  try {
+    assert.notEqual(result.status, 0);
+    assert.equal(result.stdout, "");
+    assert.equal(result.stderr, "fly-apps-still-present\n");
+    assert.doesNotMatch(`${result.stdout}${result.stderr}`, /private-app-id/);
+  } finally {
+    result.cleanup();
   }
 });
 

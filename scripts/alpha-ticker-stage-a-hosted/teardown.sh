@@ -277,6 +277,7 @@ if (initialApps.size > 0) {
     const current = listFlyApps(appIds);
     if (current.has(app)) run("fly", ["apps", "destroy", app, "--yes"], "fly-destroy-failed");
   }
+  if (listFlyApps(appIds).size !== 0) stop("fly-apps-still-present");
 }
 
 if (!deletionComplete) stop("manual-data-destruction-required", 3);
