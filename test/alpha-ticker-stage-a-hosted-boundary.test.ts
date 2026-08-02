@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -118,6 +118,20 @@ test("hosted profile rejects duplicate or non-string publicUrl values", () => {
   }
 });
 
+test("hosted profile enforces publicUrl only on the root object", () => {
+  withContent(
+    `${JSON.stringify({
+      publicUrl: hostedOrigin,
+      env: { core: { publicUrl: "https://nested.example.invalid" } },
+    })}\n`,
+    (root) => {
+      const ids = ruleIds(root);
+      assert.ok(!ids.includes("DUPLICATE_PUBLIC_URL"));
+      assert.ok(!ids.includes("UNAPPROVED_PUBLIC_URL"));
+    },
+  );
+});
+
 test("hosted wrapper resolves its repository when invoked from test directory", () => {
   assert.equal(
     execFileSync(process.execPath, [hostedWrapper], {
@@ -159,6 +173,92 @@ test("staged hosted changes use the hosted origin policy", () => {
         allowedPublicUrls: new Set(["https://other.fly.dev"]),
       }).some((violation) => violation.ruleId === "UNAPPROVED_PUBLIC_URL"),
     );
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test("staged scan isolates files so cross-file quotes cannot hide unsafe content", () => {
+  const repo = mkdtempSync(join(tmpdir(), "hosted-boundary-cross-file-"));
+  const deploymentRoot = "deploy/layers/alpha-ticker-stage-a-hosted";
+  try {
+    const root = join(repo, deploymentRoot);
+    mkdirSync(root, { recursive: true });
+    execFileSync("git", ["init", "--quiet"], { cwd: repo });
+    writeFileSync(join(root, "a-prefix.txt"), 'synthetic unmatched "\n');
+    writeFileSync(join(root, "qm.config.jsonc"), '{"publicUrl":"https://other.fly.dev"}\n');
+    writeFileSync(join(root, "z-secret.txt"), "SERVICE_TOKEN=synthetic-canary-value-1234567890\n");
+    execFileSync("git", ["add", deploymentRoot], { cwd: repo });
+
+    const violations = scanStagedDeploymentDiff(repo, deploymentRoot, { allowedPublicUrls });
+    assert.ok(
+      violations.some(
+        (violation) => violation.file.endsWith("/qm.config.jsonc") && violation.ruleId === "UNAPPROVED_PUBLIC_URL",
+      ),
+    );
+    assert.ok(
+      violations.some((violation) => violation.file.endsWith("/z-secret.txt") && violation.ruleId === "SECRET_VALUE"),
+    );
+    assert.ok(!JSON.stringify(violations).includes("synthetic-canary-value"));
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test("staged scan reads the exact index blob rather than an unstaged replacement", () => {
+  const repo = mkdtempSync(join(tmpdir(), "hosted-boundary-index-blob-"));
+  const deploymentRoot = "deploy/layers/alpha-ticker-stage-a-hosted";
+  const configPath = join(repo, deploymentRoot, "qm.config.jsonc");
+  try {
+    mkdirSync(join(repo, deploymentRoot), { recursive: true });
+    execFileSync("git", ["init", "--quiet"], { cwd: repo });
+    writeFileSync(configPath, `${JSON.stringify({ publicUrl: hostedOrigin })}\n`);
+    execFileSync("git", ["add", deploymentRoot], { cwd: repo });
+    execFileSync(
+      "git",
+      ["-c", "user.name=Boundary Test", "-c", "user.email=boundary@example.invalid", "commit", "--quiet", "-m", "base"],
+      { cwd: repo },
+    );
+
+    writeFileSync(configPath, '{"publicUrl":"https://staged-unsafe.fly.dev"}\n');
+    execFileSync("git", ["add", deploymentRoot], { cwd: repo });
+    writeFileSync(configPath, `${JSON.stringify({ publicUrl: hostedOrigin })}\n`);
+
+    const violations = scanStagedDeploymentDiff(repo, deploymentRoot, { allowedPublicUrls });
+    assert.ok(
+      violations.some(
+        (violation) => violation.file.endsWith("/qm.config.jsonc") && violation.ruleId === "UNAPPROVED_PUBLIC_URL",
+      ),
+    );
+    assert.ok(!JSON.stringify(violations).includes("staged-unsafe.fly.dev"));
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test("staged scan reports binary and oversized index blobs without content exposure", () => {
+  const repo = mkdtempSync(join(tmpdir(), "hosted-boundary-index-bounds-"));
+  const deploymentRoot = "deploy/layers/alpha-ticker-stage-a-hosted";
+  try {
+    const root = join(repo, deploymentRoot);
+    mkdirSync(root, { recursive: true });
+    execFileSync("git", ["init", "--quiet"], { cwd: repo });
+    writeFileSync(join(root, "synthetic.bin"), Buffer.from("synthetic\0binary", "utf8"));
+    const oversized = join(root, "oversized.txt");
+    writeFileSync(oversized, "");
+    truncateSync(oversized, 2_000_001);
+    execFileSync("git", ["add", deploymentRoot], { cwd: repo });
+
+    const violations = scanStagedDeploymentDiff(repo, deploymentRoot, { allowedPublicUrls });
+    assert.ok(
+      violations.some((violation) => violation.file.endsWith("/synthetic.bin") && violation.ruleId === "BINARY_ENTRY"),
+    );
+    assert.ok(
+      violations.some(
+        (violation) => violation.file.endsWith("/oversized.txt") && violation.ruleId === "OVERSIZED_ENTRY",
+      ),
+    );
+    assert.ok(!JSON.stringify(violations).includes("synthetic\\u0000binary"));
   } finally {
     rmSync(repo, { recursive: true, force: true });
   }

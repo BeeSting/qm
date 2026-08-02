@@ -174,3 +174,20 @@ test("reports oversized files without reading their contents", () => {
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("reports NUL-containing files as binary without scanning their contents", () => {
+  const root = mkdtempSync(join(repositoryRoot, ".alpha-ticker-stage-a-boundary-"));
+  try {
+    writeFileSync(
+      join(root, "synthetic.bin"),
+      Buffer.from("SERVICE_TOKEN=synthetic-canary-value-1234567890\0tail", "utf8"),
+    );
+    const violations = scanDirectory(root);
+
+    assert.ok(violations.some((violation) => violation.ruleId === "BINARY_ENTRY"));
+    assert.ok(!violations.some((violation) => violation.ruleId === "SECRET_VALUE"));
+    assert.ok(!JSON.stringify(violations).includes("synthetic-canary-value"));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

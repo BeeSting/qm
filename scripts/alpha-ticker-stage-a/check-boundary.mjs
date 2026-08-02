@@ -9,6 +9,9 @@ const DEFAULT_ROOT = "deploy/layers/alpha-ticker-stage-a";
 const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const REPOSITORY_REAL_ROOT = realpathSync(REPOSITORY_ROOT);
 const TEXT_FILE_LIMIT = 2_000_000;
+const STAGED_FILE_LIMIT = 1_000;
+const STAGED_TOTAL_SIZE_LIMIT = 20_000_000;
+const STAGED_PATH_OUTPUT_LIMIT = 2_000_000;
 const SKIP_DIRECTORIES = new Set([".git", "node_modules"]);
 const DEFAULT_ALLOWED_PUBLIC_URLS = new Set(["http://localhost:8082"]);
 
@@ -155,11 +158,37 @@ function skipJsoncTrivia(content, start) {
 
 function jsoncPropertyTokens(content) {
   const properties = [];
+  const containers = [];
+  const root = skipJsoncTrivia(content, 0);
+  if (root.malformed || content[root.index] !== "{") return { properties, malformed: false };
   let malformed = false;
   for (let index = 0; index < content.length;) {
     const trivia = skipJsoncTrivia(content, index);
     if (trivia.malformed) return { properties, malformed: true };
     index = trivia.index;
+    if (content[index] === "{") {
+      containers.push({ type: "object", expectsKey: true });
+      index++;
+      continue;
+    }
+    if (content[index] === "[") {
+      containers.push({ type: "array" });
+      index++;
+      continue;
+    }
+    if (content[index] === "}" || content[index] === "]") {
+      const expectedType = content[index] === "}" ? "object" : "array";
+      if (containers.at(-1)?.type !== expectedType) malformed = true;
+      else containers.pop();
+      index++;
+      continue;
+    }
+    if (content[index] === ",") {
+      const container = containers.at(-1);
+      if (container?.type === "object") container.expectsKey = true;
+      index++;
+      continue;
+    }
     if (content[index] !== '"') {
       index++;
       continue;
@@ -167,21 +196,25 @@ function jsoncPropertyTokens(content) {
 
     const keyEnd = scanJsonString(content, index);
     if (keyEnd === undefined) return { properties, malformed: true };
-    const afterKey = skipJsoncTrivia(content, keyEnd);
-    if (afterKey.malformed) return { properties, malformed: true };
-    if (content[afterKey.index] !== ":") {
+    let decodedString;
+    try {
+      decodedString = JSON.parse(content.slice(index, keyEnd));
+    } catch {
+      malformed = true;
+    }
+    const container = containers.at(-1);
+    if (container?.type !== "object" || !container.expectsKey) {
       index = keyEnd;
       continue;
     }
-
-    let key;
-    try {
-      key = JSON.parse(content.slice(index, keyEnd));
-    } catch {
+    const afterKey = skipJsoncTrivia(content, keyEnd);
+    if (afterKey.malformed) return { properties, malformed: true };
+    if (content[afterKey.index] !== ":") {
       malformed = true;
       index = keyEnd;
       continue;
     }
+    container.expectsKey = false;
 
     const afterColon = skipJsoncTrivia(content, afterKey.index + 1);
     if (afterColon.malformed) return { properties, malformed: true };
@@ -190,19 +223,22 @@ function jsoncPropertyTokens(content) {
     if (content[afterColon.index] === '"') {
       const valueEnd = scanJsonString(content, afterColon.index);
       if (valueEnd === undefined) {
-        if (key === "publicUrl") malformed = true;
+        malformed = true;
       } else {
         try {
           value = JSON.parse(content.slice(afterColon.index, valueEnd));
           stringValue = true;
         } catch {
-          if (key === "publicUrl") malformed = true;
+          malformed = true;
         }
       }
     }
-    properties.push({ key, stringValue, value });
+    if (containers.length === 1 && container.type === "object" && decodedString !== undefined) {
+      properties.push({ key: decodedString, stringValue, value });
+    }
     index = keyEnd;
   }
+  if (containers.length) malformed = true;
   return { properties, malformed };
 }
 
@@ -333,7 +369,10 @@ export function scanDirectory(
       addViolation(violations, `${sep}${file}`, "UNREADABLE_ENTRY");
       continue;
     }
-    if (content.includes("\0")) continue;
+    if (content.includes("\0")) {
+      addViolation(violations, `${sep}${file}`, "BINARY_ENTRY");
+      continue;
+    }
     scanContent(content, `${sep}${file}`, violations, urlPolicy);
   }
   return violations.sort((a, b) => `${a.file}:${a.ruleId}`.localeCompare(`${b.file}:${b.ruleId}`));
@@ -344,25 +383,130 @@ export function scanStagedDeploymentDiff(
   deploymentRoot = DEFAULT_ROOT,
   { allowedPublicUrls = new Set(["http://localhost:8082"]) } = {},
 ) {
-  let diff;
+  let absoluteRepository;
+  let repositoryRealRoot;
+  let gitRealRoot;
   try {
-    diff = execFileSync("git", ["diff", "--cached", "--unified=0", "--no-color", "--", deploymentRoot], {
-      cwd: repoRoot,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    });
+    absoluteRepository = resolve(repoRoot);
+    repositoryRealRoot = realpathSync(absoluteRepository);
+    gitRealRoot = realpathSync(
+      execFileSync("git", ["rev-parse", "--show-toplevel"], {
+        cwd: repositoryRealRoot,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim(),
+    );
+  } catch {
+    return [{ file: "<staged-diff>", ruleId: "STAGED_DIFF_UNREADABLE" }];
+  }
+  if (gitRealRoot !== repositoryRealRoot) {
+    return [{ file: "<staged-diff>", ruleId: "STAGED_DIFF_UNREADABLE" }];
+  }
+
+  const absoluteDeployment = resolve(repositoryRealRoot, deploymentRoot);
+  if (!isWithin(repositoryRealRoot, absoluteDeployment)) {
+    return [{ file: "<staged-diff>", ruleId: "STAGED_PATH_OUTSIDE_REPOSITORY" }];
+  }
+  const deploymentPath = relative(repositoryRealRoot, absoluteDeployment).replaceAll("\\", "/");
+  if (!deploymentPath) {
+    return [{ file: "<staged-diff>", ruleId: "STAGED_PATH_OUTSIDE_REPOSITORY" }];
+  }
+
+  let stagedPaths;
+  try {
+    const output = execFileSync(
+      "git",
+      ["diff", "--cached", "--name-only", "--diff-filter=ACMRT", "-z", "--", deploymentPath],
+      {
+        cwd: repositoryRealRoot,
+        encoding: "utf8",
+        maxBuffer: STAGED_PATH_OUTPUT_LIMIT,
+        stdio: ["ignore", "pipe", "ignore"],
+      },
+    );
+    stagedPaths = output.split("\0").filter(Boolean);
   } catch {
     return [{ file: "<staged-diff>", ruleId: "STAGED_DIFF_UNREADABLE" }];
   }
 
-  const added = diff
-    .split("\n")
-    .filter((line) => line.startsWith("+") && !line.startsWith("+++"))
-    .map((line) => line.slice(1))
-    .join("\n");
+  if (stagedPaths.length > STAGED_FILE_LIMIT) {
+    return [{ file: "<staged-diff>", ruleId: "STAGED_FILE_LIMIT_EXCEEDED" }];
+  }
+
   const violations = [];
-  scanContent(added, "<staged-deployment-diff>", violations, publicUrlPolicy(allowedPublicUrls));
-  return violations;
+  const urlPolicy = publicUrlPolicy(allowedPublicUrls);
+  let totalSize = 0;
+  for (const stagedPath of stagedPaths) {
+    const file = `${sep}${stagedPath}`;
+    const absoluteFile = resolve(repositoryRealRoot, stagedPath);
+    if (!isWithin(repositoryRealRoot, absoluteFile) || !isWithin(absoluteDeployment, absoluteFile)) {
+      addViolation(violations, file, "STAGED_PATH_OUTSIDE_REPOSITORY");
+      continue;
+    }
+    if (basename(stagedPath) === ".env") {
+      addViolation(violations, file, "COMMITTED_ENV_FILE");
+      continue;
+    }
+
+    try {
+      const indexRecords = execFileSync("git", ["ls-files", "--stage", "-z", "--", stagedPath], {
+        cwd: repositoryRealRoot,
+        encoding: "utf8",
+        maxBuffer: 16_384,
+        stdio: ["ignore", "pipe", "ignore"],
+      })
+        .split("\0")
+        .filter(Boolean);
+      if (indexRecords.length !== 1) throw new Error("missing stage-zero entry");
+      const metadata = indexRecords[0].slice(0, indexRecords[0].indexOf("\t"));
+      const match = /^(\d{6}) ([a-f0-9]{40,64}) 0$/.exec(metadata);
+      if (!match) throw new Error("invalid stage-zero entry");
+      const [, mode, objectId] = match;
+      if (mode === "120000") {
+        addViolation(violations, file, "SYMLINK_ENTRY");
+        continue;
+      }
+      if (mode !== "100644" && mode !== "100755") {
+        addViolation(violations, file, "UNSUPPORTED_ENTRY_TYPE");
+        continue;
+      }
+
+      const size = Number(
+        execFileSync("git", ["cat-file", "-s", objectId], {
+          cwd: repositoryRealRoot,
+          encoding: "utf8",
+          maxBuffer: 1_024,
+          stdio: ["ignore", "pipe", "ignore"],
+        }).trim(),
+      );
+      if (!Number.isSafeInteger(size) || size < 0) throw new Error("invalid staged object size");
+      if (size > TEXT_FILE_LIMIT) {
+        addViolation(violations, file, "OVERSIZED_ENTRY");
+        continue;
+      }
+      totalSize += size;
+      if (totalSize > STAGED_TOTAL_SIZE_LIMIT) {
+        addViolation(violations, "<staged-diff>", "STAGED_TOTAL_SIZE_EXCEEDED");
+        break;
+      }
+
+      const blob = execFileSync("git", ["cat-file", "blob", objectId], {
+        cwd: repositoryRealRoot,
+        maxBuffer: TEXT_FILE_LIMIT + 1,
+        stdio: ["ignore", "pipe", "ignore"],
+      });
+      if (!Buffer.isBuffer(blob) || blob.length !== size) throw new Error("invalid staged object");
+      if (blob.includes(0)) {
+        addViolation(violations, file, "BINARY_ENTRY");
+        continue;
+      }
+      scanContent(blob.toString("utf8"), file, violations, urlPolicy);
+    } catch {
+      addViolation(violations, file, "STAGED_DIFF_UNREADABLE");
+    }
+  }
+
+  return violations.sort((a, b) => `${a.file}:${a.ruleId}`.localeCompare(`${b.file}:${b.ruleId}`));
 }
 
 function runCli() {
