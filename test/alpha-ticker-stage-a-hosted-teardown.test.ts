@@ -56,6 +56,7 @@ interface TeardownScenario {
   useRealQmVerifier?: boolean;
   tamperQmExecutable?: boolean;
   flyLeaderExitsDescendantIgnores?: boolean;
+  flyOutputBytes?: number;
   capturedApps?: string[];
   captureDataResources?: boolean;
   captureSandboxRegistry?: boolean;
@@ -85,12 +86,10 @@ function createTeardownScenario(scenario: TeardownScenario = {}) {
   writeNodeExecutable(
     join(dirname(script), "activation-record.mjs"),
     `import { appendFileSync } from "node:fs";
-import { spawnSync } from "node:child_process";
 const args = process.argv.slice(2);
 if (args[0] === "--verify-qm-install") appendFileSync(${JSON.stringify(callLog)}, "verify:qm-install\\n");
 if (args[0] === "--verify-qm-install" && process.env.TEST_REAL_QM_VERIFIER !== "1") process.exit(0);
-const result = spawnSync(process.execPath, [${JSON.stringify(realActivation)}, ...args], { stdio: "inherit" });
-process.exit(Number.isInteger(result.status) ? result.status : 1);
+process.execve(process.execPath, [process.execPath, ${JSON.stringify(realActivation)}, ...args], process.env);
 `,
   );
 
@@ -227,7 +226,7 @@ trap 'exit 0' TERM
 ) &
 descendant_pid=$!
 printf '%s %s\\n' "$$" "$descendant_pid" > "$process_file"
-wait "$descendant_pid"
+${scenario.flyOutputBytes ? `head -c ${scenario.flyOutputBytes} /dev/zero | tr '\\000' x\n` : ""}wait "$descendant_pid"
 `
           : ""
       }` +
@@ -662,6 +661,35 @@ test("hosted teardown reaps a SIGTERM-ignoring descendant after the Fly leader e
         process.kill(descendantPid, "SIGKILL");
       } catch {
         // The hardened timeout path is expected to have reaped it already.
+      }
+    }
+    result.cleanup();
+  }
+});
+
+test("hosted teardown bounds provider output inside the owner and reaps its process group", () => {
+  const result = createTeardownScenario({
+    flyLeaderExitsDescendantIgnores: true,
+    flyOutputBytes: 1_100_000,
+    commandTimeoutMs: 5_000,
+  });
+  let leaderPid: number | undefined;
+  try {
+    assert.notEqual(result.status, 0);
+    const [leaderText, descendantText] = readFileSync(result.processFile, "utf8").trim().split(" ");
+    leaderPid = Number(leaderText);
+    const descendantPid = Number(descendantText);
+    assert.ok(Number.isSafeInteger(leaderPid));
+    assert.ok(Number.isSafeInteger(descendantPid));
+    assert.throws(() => process.kill(descendantPid, 0), { code: "ESRCH" });
+    assert.equal(result.stdout, "");
+    assert.equal(result.stderr, "fly-inventory-invalid\n");
+  } finally {
+    if (leaderPid !== undefined) {
+      try {
+        process.kill(-leaderPid, "SIGKILL");
+      } catch {
+        // The bounded wrapper is expected to have removed the group already.
       }
     }
     result.cleanup();

@@ -603,7 +603,7 @@ test("timeout helper kills descendants after a SIGTERM-responsive leader exits",
 trap 'exit 0' TERM
 (
   trap '' TERM
-  while :; do sleep 10; done
+  exec ${shellQuote(process.execPath)} -e 'process.on("SIGTERM", () => {}); setInterval(() => {}, 1000)'
 ) &
 descendant_pid=$!
 printf '%s %s\n' "$$" "$descendant_pid" > "$process_file"
@@ -653,7 +653,7 @@ test("timeout helper bounds provider output and reaps the detached process group
 trap 'exit 0' TERM
 (
   trap '' TERM
-  while :; do sleep 10; done
+  exec ${shellQuote(process.execPath)} -e 'process.on("SIGTERM", () => {}); setInterval(() => {}, 1000)'
 ) &
 descendant_pid=$!
 printf '%s %s\n' "$$" "$descendant_pid" > "$process_file"
@@ -666,7 +666,9 @@ wait "$descendant_pid"
       process.execPath,
       [activationScript, "--run-timeout", "5000", "--", command, processFile],
       {
-        stdio: "ignore",
+        encoding: "utf8",
+        maxBuffer: 2 * 1024 * 1024,
+        stdio: ["ignore", "pipe", "pipe"],
         timeout: 8_000,
         killSignal: "SIGKILL",
       },
@@ -676,6 +678,8 @@ wait "$descendant_pid"
     const descendantPid = Number(descendantText);
 
     assert.equal(result.status, 125);
+    assert.equal(result.stdout, "");
+    assert.equal(result.stderr, "");
     assert.throws(() => process.kill(descendantPid, 0), { code: "ESRCH" });
   } finally {
     if (leaderPid !== undefined) {

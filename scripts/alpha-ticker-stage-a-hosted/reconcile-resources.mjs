@@ -47,6 +47,7 @@ const ID_PATTERN = /^[A-Za-z0-9._:-]{1,255}$/;
 const RESOURCE_NAME_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,62})$/;
 const INVENTORY_LIMIT_BYTES = 64 * 1024;
 const PROVIDER_OUTPUT_LIMIT_BYTES = 1024 * 1024;
+const OUTER_COMMAND_BUFFER_BYTES = 2 * 1024 * 1024;
 const ACTIVATION_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "activation-record.mjs");
 const timeoutCandidate = Number(process.env.ALPHA_TICKER_RECONCILE_TIMEOUT_MS ?? "15000");
 const COMMAND_TIMEOUT_MS =
@@ -283,7 +284,7 @@ function runFly(args) {
     {
       encoding: "utf8",
       input: "",
-      maxBuffer: PROVIDER_OUTPUT_LIMIT_BYTES + 1,
+      maxBuffer: OUTER_COMMAND_BUFFER_BYTES,
       stdio: ["ignore", "pipe", "pipe"],
     },
   );

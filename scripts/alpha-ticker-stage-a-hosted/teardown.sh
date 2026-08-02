@@ -68,7 +68,8 @@ const qmManagedApps = [
 const inventoryPath = join(generated, "resource-inventory.json");
 const teardownEvidencePath = join(generated, "teardown-evidence.json");
 const maxInputBytes = 64 * 1024;
-const maxCommandBytes = 64 * 1024;
+const providerOutputLimitBytes = 1024 * 1024;
+const outerCommandBufferBytes = 2 * 1024 * 1024;
 const timeoutCandidate = Number(process.env.ALPHA_TICKER_TEARDOWN_TIMEOUT_MS ?? "15000");
 const requestedTimeoutMs =
   Number.isSafeInteger(timeoutCandidate) && timeoutCandidate >= 100 && timeoutCandidate <= 30_000
@@ -247,12 +248,12 @@ function run(command, args, failure) {
       cwd: deployment,
       encoding: "utf8",
       input: "",
-      maxBuffer: maxCommandBytes,
+      maxBuffer: outerCommandBufferBytes,
       stdio: ["ignore", "pipe", "pipe"],
     },
   );
   if (result.error || result.status !== 0 || result.signal !== null) stop(failure);
-  if (Buffer.byteLength(result.stdout ?? "", "utf8") > maxCommandBytes) stop(failure);
+  if (Buffer.byteLength(result.stdout ?? "", "utf8") > providerOutputLimitBytes) stop(failure);
   return result.stdout;
 }
 
@@ -264,7 +265,7 @@ function verifyQmInstall() {
       cwd: deployment,
       encoding: "utf8",
       input: "",
-      maxBuffer: maxCommandBytes,
+      maxBuffer: outerCommandBufferBytes,
       stdio: ["ignore", "pipe", "pipe"],
     },
   );

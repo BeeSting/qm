@@ -168,14 +168,14 @@ esac
   };
   setFlyScenario();
 
-  const run = (mode: "--begin" | "--reconcile") =>
+  const run = (mode: "--begin" | "--reconcile", commandTimeoutMs = 5_000) =>
     spawnSync(process.execPath, [reconciler, mode, "--inventory", inventoryPath], {
       cwd: root,
       encoding: "utf8",
       env: {
         ...process.env,
         PATH: `${shims}:${process.env.PATH ?? ""}`,
-        ALPHA_TICKER_RECONCILE_TIMEOUT_MS: "1000",
+        ALPHA_TICKER_RECONCILE_TIMEOUT_MS: String(commandTimeoutMs),
       },
       timeout: 8_000,
       killSignal: "SIGKILL",
@@ -416,7 +416,10 @@ test("resource reconciler failures remain unresolved, bounded, and identifier-fr
     try {
       harness.setFlyScenario(scenario);
       const before = readFileSync(harness.inventoryPath);
-      const result = harness.run("--reconcile");
+      const result = harness.run(
+        "--reconcile",
+        scenario.appsSleepSeconds || scenario.descendantIgnoresTermination ? 1_000 : 5_000,
+      );
       assertFixedFailure(result);
       assert.equal(readFileSync(harness.inventoryPath).equals(before), true);
       assert.equal(readInventory(harness.inventoryPath).h2ResourceReconciliation, "unresolved");
