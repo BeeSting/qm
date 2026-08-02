@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { basename, dirname, join, relative, resolve, sep } from "node:path";
-import { pathToFileURL } from "node:url";
+import { lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const DEFAULT_ROOT = "deploy/layers/alpha-ticker-stage-a";
+const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+const REPOSITORY_REAL_ROOT = realpathSync(REPOSITORY_ROOT);
 const TEXT_FILE_LIMIT = 2_000_000;
 const SKIP_DIRECTORIES = new Set([".git", "node_modules"]);
 const DEFAULT_ALLOWED_PUBLIC_URLS = new Set(["http://localhost:8082"]);
@@ -40,27 +42,62 @@ const CONTENT_RULES = [
   },
 ];
 
-function listFiles(root) {
-  const files = [];
-  const stack = [resolve(root)];
-  while (stack.length) {
-    const current = stack.pop();
-    if (!current || !existsSync(current)) continue;
-    const entry = statSync(current);
-    if (entry.isDirectory()) {
-      if (SKIP_DIRECTORIES.has(basename(current))) continue;
-      for (const child of readdirSync(current)) stack.push(join(current, child));
-      continue;
-    }
-    if (entry.isFile() && entry.size <= TEXT_FILE_LIMIT) files.push(current);
-  }
-  return files.sort();
-}
-
 function addViolation(violations, file, ruleId) {
   if (!violations.some((entry) => entry.file === file && entry.ruleId === ruleId)) {
     violations.push({ file, ruleId });
   }
+}
+
+function entryName(root, filePath) {
+  const file = relative(root, filePath);
+  return file ? `${sep}${file}` : "<scan-root>";
+}
+
+function listFiles(root, violations) {
+  const files = [];
+  const stack = [resolve(root)];
+  while (stack.length) {
+    const current = stack.pop();
+    if (!current) continue;
+    let entry;
+    try {
+      entry = lstatSync(current);
+    } catch {
+      addViolation(violations, entryName(root, current), "UNREADABLE_ENTRY");
+      continue;
+    }
+    if (entry.isSymbolicLink()) {
+      addViolation(violations, entryName(root, current), "SYMLINK_ENTRY");
+      continue;
+    }
+    if (entry.isDirectory()) {
+      if (SKIP_DIRECTORIES.has(basename(current))) continue;
+      try {
+        for (const child of readdirSync(current)) stack.push(join(current, child));
+      } catch {
+        addViolation(violations, entryName(root, current), "UNREADABLE_ENTRY");
+      }
+      continue;
+    }
+    if (entry.isFile()) {
+      if (entry.size <= TEXT_FILE_LIMIT) files.push(current);
+      continue;
+    }
+    addViolation(violations, entryName(root, current), "UNSUPPORTED_ENTRY_TYPE");
+  }
+  return files.sort();
+}
+
+function isWithin(root, filePath) {
+  const pathFromRepository = relative(root, filePath);
+  return (
+    pathFromRepository === "" ||
+    (pathFromRepository !== ".." && !pathFromRepository.startsWith(`..${sep}`) && !isAbsolute(pathFromRepository))
+  );
+}
+
+function isWithinRepository(filePath) {
+  return isWithin(REPOSITORY_ROOT, filePath);
 }
 
 function normalizedOrigins(allowedPublicUrls) {
@@ -81,20 +118,27 @@ function normalizedOrigins(allowedPublicUrls) {
 }
 
 function scanPublicUrl(content, file, violations, { allowedOrigins, localPolicy }) {
-  const match = /["']publicUrl["']\s*:\s*["']([^"']+)["']/i.exec(content);
-  if (!match) return;
-  try {
-    const url = new URL(match[1]);
-    const approved =
-      (url.protocol === "http:" || url.protocol === "https:") &&
-      !url.username &&
-      !url.password &&
-      allowedOrigins.has(url.origin);
-    if (!approved) addViolation(violations, file, "UNAPPROVED_PUBLIC_URL");
-    if (localPolicy && !approved) addViolation(violations, file, "NON_LOOPBACK_PUBLIC_URL");
-  } catch {
+  const keys = [...content.matchAll(/["']publicUrl["']\s*:/gi)];
+  const matches = [...content.matchAll(/["']publicUrl["']\s*:\s*["']([^"']+)["']/gi)];
+  if (keys.length > 1) addViolation(violations, file, "DUPLICATE_PUBLIC_URL");
+  if (keys.length !== matches.length) {
     addViolation(violations, file, "UNAPPROVED_PUBLIC_URL");
     if (localPolicy) addViolation(violations, file, "NON_LOOPBACK_PUBLIC_URL");
+  }
+  for (const match of matches) {
+    try {
+      const url = new URL(match[1]);
+      const approved =
+        (url.protocol === "http:" || url.protocol === "https:") &&
+        !url.username &&
+        !url.password &&
+        allowedOrigins.has(url.origin);
+      if (!approved) addViolation(violations, file, "UNAPPROVED_PUBLIC_URL");
+      if (localPolicy && !approved) addViolation(violations, file, "NON_LOOPBACK_PUBLIC_URL");
+    } catch {
+      addViolation(violations, file, "UNAPPROVED_PUBLIC_URL");
+      if (localPolicy) addViolation(violations, file, "NON_LOOPBACK_PUBLIC_URL");
+    }
   }
 }
 
@@ -150,8 +194,32 @@ function publicUrlPolicy(allowedPublicUrls) {
 export function scanDirectory(root, { allowedPublicUrls = new Set(["http://localhost:8082"]) } = {}) {
   const absoluteRoot = resolve(root);
   const violations = [];
+  if (!isWithinRepository(absoluteRoot)) {
+    return [{ file: "<scan-root>", ruleId: "SCAN_ROOT_OUTSIDE_REPOSITORY" }];
+  }
+  let rootEntry;
+  try {
+    rootEntry = lstatSync(absoluteRoot);
+  } catch {
+    return [{ file: "<scan-root>", ruleId: "MISSING_SCAN_ROOT" }];
+  }
+  if (rootEntry.isSymbolicLink()) {
+    return [{ file: "<scan-root>", ruleId: "SYMLINK_ENTRY" }];
+  }
+  if (!rootEntry.isDirectory()) {
+    return [{ file: "<scan-root>", ruleId: "UNSUPPORTED_ENTRY_TYPE" }];
+  }
+  let realRoot;
+  try {
+    realRoot = realpathSync(absoluteRoot);
+  } catch {
+    return [{ file: "<scan-root>", ruleId: "UNREADABLE_ENTRY" }];
+  }
+  if (!isWithin(REPOSITORY_REAL_ROOT, realRoot)) {
+    return [{ file: "<scan-root>", ruleId: "SCAN_ROOT_OUTSIDE_REPOSITORY" }];
+  }
   const urlPolicy = publicUrlPolicy(allowedPublicUrls);
-  for (const filePath of listFiles(absoluteRoot)) {
+  for (const filePath of listFiles(absoluteRoot, violations)) {
     const file = relative(absoluteRoot, filePath) || basename(filePath);
     if (basename(filePath) === ".env") {
       if (!isGitIgnored(filePath)) addViolation(violations, file, "COMMITTED_ENV_FILE");
@@ -197,13 +265,15 @@ export function scanStagedDeploymentDiff(
 
 function runCli() {
   const rootArg = process.argv.indexOf("--root");
-  const root = rootArg >= 0 ? process.argv[rootArg + 1] : DEFAULT_ROOT;
+  const root = rootArg >= 0 ? process.argv[rootArg + 1] : join(REPOSITORY_ROOT, DEFAULT_ROOT);
   if (!root) {
     process.stderr.write("boundary-check: missing root\n");
     process.exitCode = 2;
     return;
   }
-  const violations = [...scanDirectory(root), ...scanStagedDeploymentDiff()];
+  const absoluteRoot = resolve(root);
+  const deploymentPath = isWithinRepository(absoluteRoot) ? relative(REPOSITORY_ROOT, absoluteRoot) : root;
+  const violations = [...scanDirectory(absoluteRoot), ...scanStagedDeploymentDiff(REPOSITORY_ROOT, deploymentPath)];
   if (!violations.length) {
     process.stdout.write("boundary-check: pass\n");
     return;

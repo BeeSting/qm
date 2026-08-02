@@ -1,15 +1,18 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { scanDirectory } from "../scripts/alpha-ticker-stage-a/check-boundary.mjs";
 
 const deploymentRoot = "deploy/layers/alpha-ticker-stage-a";
+const repositoryRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 function withCanary(name: string, content: string, run: (root: string) => void) {
-  const root = mkdtempSync(join(tmpdir(), "alpha-ticker-stage-a-boundary-"));
+  const root = mkdtempSync(join(repositoryRoot, ".alpha-ticker-stage-a-boundary-"));
   try {
     writeFileSync(join(root, name), content);
     run(root);
@@ -62,7 +65,7 @@ test("detects real portfolio labels and sensitive classifications", () => {
 });
 
 test("detects write-capable or egress-enabled tool descriptors", () => {
-  const root = mkdtempSync(join(tmpdir(), "alpha-ticker-stage-a-boundary-"));
+  const root = mkdtempSync(join(repositoryRoot, ".alpha-ticker-stage-a-boundary-"));
   try {
     const toolDir = join(root, "sandbox/tools/unsafe-tool");
     mkdirSync(toolDir, { recursive: true });
@@ -71,6 +74,62 @@ test("detects write-capable or egress-enabled tool descriptors", () => {
       '{"id":"unsafe-tool","egress":["example.invalid"],"install":{"binary":"unsafe-tool"}}\n',
     );
     assert.ok(ruleIds(root).includes("TOOL_CAPABILITY"));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("fails closed when the scan root is missing or outside the repository", () => {
+  const missingRoot = join(repositoryRoot, ".missing-alpha-ticker-stage-a-boundary");
+  assert.ok(ruleIds(missingRoot).includes("MISSING_SCAN_ROOT"));
+
+  const outsideRoot = mkdtempSync(join(tmpdir(), "alpha-ticker-stage-a-outside-"));
+  try {
+    writeFileSync(join(outsideRoot, "benign.txt"), "synthetic\n");
+    assert.ok(ruleIds(outsideRoot).includes("SCAN_ROOT_OUTSIDE_REPOSITORY"));
+  } finally {
+    rmSync(outsideRoot, { recursive: true, force: true });
+  }
+});
+
+test("rejects symlink escapes without reading their targets", () => {
+  const root = mkdtempSync(join(repositoryRoot, ".alpha-ticker-stage-a-boundary-"));
+  const outsideRoot = mkdtempSync(join(tmpdir(), "alpha-ticker-stage-a-target-"));
+  try {
+    const target = join(outsideRoot, "synthetic-secret.txt");
+    writeFileSync(target, "SERVICE_TOKEN=synthetic-canary-value-1234567890\n");
+    symlinkSync(target, join(root, "alias.txt"));
+
+    const ids = ruleIds(root);
+    assert.ok(ids.includes("SYMLINK_ENTRY"));
+    assert.ok(!ids.includes("SECRET_VALUE"));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(outsideRoot, { recursive: true, force: true });
+  }
+});
+
+test("rejects a scan root reached through a symlinked parent", () => {
+  const outsideRoot = mkdtempSync(join(tmpdir(), "alpha-ticker-stage-a-parent-target-"));
+  const linkedParent = join(repositoryRoot, `.alpha-ticker-stage-a-linked-parent-${process.pid}`);
+  try {
+    const outsideDeployment = join(outsideRoot, "deployment");
+    mkdirSync(outsideDeployment);
+    writeFileSync(join(outsideDeployment, "synthetic.txt"), "synthetic\n");
+    symlinkSync(outsideRoot, linkedParent);
+
+    assert.ok(ruleIds(join(linkedParent, "deployment")).includes("SCAN_ROOT_OUTSIDE_REPOSITORY"));
+  } finally {
+    rmSync(linkedParent, { force: true });
+    rmSync(outsideRoot, { recursive: true, force: true });
+  }
+});
+
+test("rejects unsupported filesystem entry types", () => {
+  const root = mkdtempSync(join(repositoryRoot, ".alpha-ticker-stage-a-boundary-"));
+  try {
+    execFileSync("mkfifo", [join(root, "synthetic.fifo")]);
+    assert.ok(ruleIds(root).includes("UNSUPPORTED_ENTRY_TYPE"));
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

@@ -1,23 +1,30 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { scanDirectory, scanStagedDeploymentDiff } from "../scripts/alpha-ticker-stage-a/check-boundary.mjs";
 
 const hostedOrigin = "https://alpha-ticker-stage-a-hosted-portal.fly.dev";
 const allowedPublicUrls = new Set([hostedOrigin]);
+const repositoryRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
+const hostedWrapper = join(repositoryRoot, "scripts/alpha-ticker-stage-a-hosted/check-boundary.mjs");
 
-function withConfig(publicUrl: string, run: (root: string) => void) {
-  const root = mkdtempSync(join(tmpdir(), "hosted-boundary-"));
+function withContent(content: string, run: (root: string) => void) {
+  const root = mkdtempSync(join(repositoryRoot, ".hosted-boundary-"));
   try {
-    writeFileSync(join(root, "qm.config.jsonc"), `${JSON.stringify({ publicUrl })}\n`);
+    writeFileSync(join(root, "qm.config.jsonc"), content);
     run(root);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+}
+
+function withConfig(publicUrl: string, run: (root: string) => void) {
+  withContent(`${JSON.stringify({ publicUrl })}\n`, run);
 }
 
 function ruleIds(root: string, allowed = allowedPublicUrls) {
@@ -55,6 +62,58 @@ test("hosted profile fails closed on invalid configured and allowed URLs", () =>
   withConfig(hostedOrigin, (root) => {
     assert.ok(ruleIds(root, new Set(["not a URL"])).includes("UNAPPROVED_PUBLIC_URL"));
   });
+});
+
+test("hosted profile rejects duplicate publicUrl keys in either order", () => {
+  for (const content of [
+    `{"publicUrl":"${hostedOrigin}","publicUrl":"https://other.fly.dev"}\n`,
+    `{"publicUrl":"https://other.fly.dev","publicUrl":"${hostedOrigin}"}\n`,
+  ]) {
+    withContent(content, (root) => {
+      const ids = ruleIds(root);
+      assert.ok(ids.includes("DUPLICATE_PUBLIC_URL"));
+      assert.ok(ids.includes("UNAPPROVED_PUBLIC_URL"));
+    });
+  }
+});
+
+test("hosted profile rejects duplicate or non-string publicUrl values", () => {
+  for (const content of [
+    `{"publicUrl":"${hostedOrigin}","publicUrl":"${hostedOrigin}"}\n`,
+    `{"publicUrl":"${hostedOrigin}","publicUrl":null}\n`,
+    `{"publicUrl":null}\n`,
+  ]) {
+    withContent(content, (root) => {
+      const ids = ruleIds(root);
+      assert.ok(ids.includes("DUPLICATE_PUBLIC_URL") || ids.includes("UNAPPROVED_PUBLIC_URL"));
+    });
+  }
+});
+
+test("hosted wrapper resolves its repository when invoked from test directory", () => {
+  assert.equal(
+    execFileSync(process.execPath, [hostedWrapper], {
+      cwd: join(repositoryRoot, "test"),
+      encoding: "utf8",
+    }),
+    "hosted-boundary-check: pass\n",
+  );
+});
+
+test("rejects a symlink alias to a synthetic ignored env without reading it", () => {
+  const root = mkdtempSync(join(repositoryRoot, "deploy/layers/alpha-ticker-stage-a-hosted/.boundary-"));
+  try {
+    const envFile = join(root, ".env");
+    writeFileSync(envFile, "SERVICE_TOKEN=synthetic-canary-value-1234567890\n");
+    symlinkSync(envFile, join(root, "alias.txt"));
+
+    const ids = ruleIds(root);
+    assert.ok(ids.includes("SYMLINK_ENTRY"));
+    assert.ok(!ids.includes("SECRET_VALUE"));
+    assert.ok(!ids.includes("COMMITTED_ENV_FILE"));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("staged hosted changes use the hosted origin policy", () => {
