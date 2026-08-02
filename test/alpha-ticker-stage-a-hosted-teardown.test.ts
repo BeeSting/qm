@@ -44,6 +44,7 @@ interface TeardownScenario {
   flyIdMismatch?: boolean;
   flySleepSeconds?: number;
   qmSleepSeconds?: number;
+  commandTimeoutMs?: number;
   qmPackageVersion?: string;
   qmBinaryTarget?: "valid" | "wrong" | "missing";
   managedPostgresDeleted?: boolean;
@@ -244,7 +245,7 @@ wait "$descendant_pid"
       ...process.env,
       PATH: `${shimRoot}:${process.env.PATH ?? ""}`,
       STAGE_A_DESTROY_CONFIRM: scenario.confirmation ?? "alpha-ticker-stage-a-hosted",
-      ALPHA_TICKER_TEARDOWN_TIMEOUT_MS: "500",
+      ALPHA_TICKER_TEARDOWN_TIMEOUT_MS: String(scenario.commandTimeoutMs ?? 5_000),
       TEST_REAL_QM_VERIFIER: scenario.useRealQmVerifier ? "1" : "0",
     },
     timeout: 8_000,
@@ -625,14 +626,14 @@ test("hosted teardown cryptographically verifies the exact QM package tree befor
 });
 
 test("hosted teardown bounds hung QM and Fly commands", () => {
-  const hungQm = createTeardownScenario({ qmSleepSeconds: 2 });
+  const hungQm = createTeardownScenario({ qmSleepSeconds: 2, commandTimeoutMs: 500 });
   try {
     assert.notEqual(hungQm.status, 0);
     assert.equal(hungQm.stderr, "qm-down-failed\n");
   } finally {
     hungQm.cleanup();
   }
-  const hungFly = createTeardownScenario({ flySleepSeconds: 2 });
+  const hungFly = createTeardownScenario({ flySleepSeconds: 2, commandTimeoutMs: 500 });
   try {
     assert.notEqual(hungFly.status, 0);
     assert.equal(hungFly.stderr, "fly-inventory-invalid\n");
@@ -642,7 +643,7 @@ test("hosted teardown bounds hung QM and Fly commands", () => {
 });
 
 test("hosted teardown reaps a SIGTERM-ignoring descendant after the Fly leader exits", () => {
-  const result = createTeardownScenario({ flyLeaderExitsDescendantIgnores: true });
+  const result = createTeardownScenario({ flyLeaderExitsDescendantIgnores: true, commandTimeoutMs: 500 });
   let descendantPid: number | undefined;
   try {
     assert.notEqual(result.status, 0);
