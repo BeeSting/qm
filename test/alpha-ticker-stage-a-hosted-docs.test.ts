@@ -385,6 +385,16 @@ test("H5 initializes deletion evidence and documents early-stop and cryptographi
     ],
     "H5 teardown evidence",
   );
+  requireAll(
+    limitations,
+    [
+      "Tigris identity limitation",
+      "name-bound deletion key",
+      "no immutable-identity claim for object storage",
+      "delete-and-recreate event using the same bucket name",
+    ],
+    "Tigris identity limitation",
+  );
   assert.ok(h5.indexOf("before the first H5 teardown dry-run or execute") < h5.indexOf("teardown.sh --dry-run"));
 
   requireAll(

@@ -35,6 +35,7 @@ Tasks 1 through 9 are repository-only and perform no cloud or provider mutation.
 ### Task 1: Establish the exact execution environment
 
 **Files:**
+
 - Verify: `UPSTREAM.lock.json`
 - Verify: `package.json`
 - Verify: `test/alpha-ticker-stage-a-pin.test.ts`
@@ -77,6 +78,7 @@ Expected: clean status before implementation, ancestor check exit 0, dependency 
 ### Task 2: Define the hosted deployment policy test-first
 
 **Files:**
+
 - Create: `test/alpha-ticker-stage-a-hosted-policy.test.ts`
 - Create: `deploy/layers/alpha-ticker-stage-a-hosted/qm.config.jsonc`
 - Create: `deploy/layers/alpha-ticker-stage-a-hosted/stage-a-hosted-policy.json`
@@ -118,19 +120,14 @@ test("hosted Stage A is model-backed, bounded, and connector-free", () => {
   assert.equal(config.env.core?.BUDGET_WINDOW_MS, "604800000");
   assert.equal(config.env.core?.BUDGET_USD_PER_WINDOW, "20");
   assert.equal(config.env.core?.ORG_BUDGET_USD_PER_WINDOW, "45");
-  assert.equal(
-    config.env.core?.SPRITES_EGRESS_PROXY_URL,
-    "https://alpha-ticker-stage-a-egress.fly.dev",
-  );
+  assert.equal(config.env.core?.SPRITES_EGRESS_PROXY_URL, "https://alpha-ticker-stage-a-egress.fly.dev");
 
   assert.equal(policy.dataClass, "public-synthetic-only");
   assert.equal(policy.modelBacked, true);
   assert.equal(policy.liveAlphaPackets, false);
   assert.equal(policy.productionCredentials, false);
   assert.deepEqual(policy.allowedTools, ["alpha-packet"]);
-  assert.deepEqual(policy.allowedSandboxControlPlaneHosts, [
-    "alpha-ticker-stage-a-hosted-portal.fly.dev",
-  ]);
+  assert.deepEqual(policy.allowedSandboxControlPlaneHosts, ["alpha-ticker-stage-a-hosted-portal.fly.dev"]);
   assert.deepEqual(policy.allowedSandboxExternalHosts, []);
   assert.deepEqual(policy.coreExternalDependencies, [
     "openai-api",
@@ -211,15 +208,15 @@ Use `apply_patch` to make `qm.config.jsonc` contain these effective values, reta
       "BUDGET_WINDOW_MS": "604800000",
       "BUDGET_USD_PER_WINDOW": "20",
       "ORG_BUDGET_USD_PER_WINDOW": "45",
-      "SPRITES_EGRESS_PROXY_URL": "https://alpha-ticker-stage-a-egress.fly.dev"
+      "SPRITES_EGRESS_PROXY_URL": "https://alpha-ticker-stage-a-egress.fly.dev",
     },
     "auth": {
       "AUTH_EMAIL_TRANSPORT": "smtp",
-      "AUTH_BRAND_NAME": "Alpha Ticker QM Stage A"
-    }
+      "AUTH_BRAND_NAME": "Alpha Ticker QM Stage A",
+    },
   },
   "secretEnv": { "core": { "ADMIN_GRANTS": "ADMIN_GRANTS" } },
-  "sandbox": { "app": "alpha-ticker-stage-a-hosted-sandboxes" }
+  "sandbox": { "app": "alpha-ticker-stage-a-hosted-sandboxes" },
 }
 ```
 
@@ -326,6 +323,7 @@ Before committing, verify `.env` and `node_modules` are not staged.
 ### Task 3: Add the default-deny egress proxy contract
 
 **Files:**
+
 - Create: `deploy/layers/alpha-ticker-stage-a-hosted/egress-proxy.fly.toml`
 - Create: `scripts/alpha-ticker-stage-a-hosted/probe-egress.mjs`
 - Create: `test/alpha-ticker-stage-a-hosted-egress.test.ts`
@@ -428,6 +426,7 @@ git commit -m "security: define hosted Stage A egress proxy"
 ### Task 4: Reuse the approved synthetic workflow layer without drift
 
 **Files:**
+
 - Create: `deploy/layers/alpha-ticker-stage-a-hosted/sandbox/skills/**`
 - Create: `deploy/layers/alpha-ticker-stage-a-hosted/sandbox/tools/alpha-packet/**`
 - Create: `test/alpha-ticker-stage-a-hosted-layer-parity.test.ts`
@@ -496,10 +495,7 @@ node --test test/alpha-ticker-stage-a-hosted-layer-parity.test.ts
 Then update `test/alpha-ticker-stage-a-workflows.test.ts` and `test/alpha-ticker-stage-a-packet-tool.test.ts` to loop over these roots without changing their assertions:
 
 ```ts
-const deploymentRoots = [
-  "deploy/layers/alpha-ticker-stage-a",
-  "deploy/layers/alpha-ticker-stage-a-hosted",
-] as const;
+const deploymentRoots = ["deploy/layers/alpha-ticker-stage-a", "deploy/layers/alpha-ticker-stage-a-hosted"] as const;
 ```
 
 Run:
@@ -526,6 +522,7 @@ git commit -m "feat: reuse synthetic workflows in hosted Stage A"
 ### Task 5: Generalize the boundary scanner for an approved hosted origin
 
 **Files:**
+
 - Modify: `scripts/alpha-ticker-stage-a/check-boundary.mjs`
 - Create: `scripts/alpha-ticker-stage-a-hosted/check-boundary.mjs`
 - Modify: `test/alpha-ticker-stage-a-boundary.test.ts`
@@ -547,10 +544,7 @@ import { scanDirectory } from "../scripts/alpha-ticker-stage-a/check-boundary.mj
 const allowed = new Set(["https://alpha-ticker-stage-a-hosted-portal.fly.dev"]);
 
 test("committed hosted layer is boundary-clean under its exact origin", () => {
-  assert.deepEqual(
-    scanDirectory("deploy/layers/alpha-ticker-stage-a-hosted", { allowedPublicUrls: allowed }),
-    [],
-  );
+  assert.deepEqual(scanDirectory("deploy/layers/alpha-ticker-stage-a-hosted", { allowedPublicUrls: allowed }), []);
 });
 
 test("hosted profile rejects an unapproved public origin", () => {
@@ -632,6 +626,7 @@ git commit -m "security: enforce hosted Stage A boundary profile"
 ### Task 6: Add a content-minimized evaluation ledger
 
 **Files:**
+
 - Create: `scripts/alpha-ticker-stage-a-hosted/evaluation-ledger.mjs`
 - Create: `test/alpha-ticker-stage-a-hosted-evaluation.test.ts`
 
@@ -669,7 +664,7 @@ const valid = {
   costUsd: 0.02,
   model: "gpt-5.6-terra",
   deploymentRevision: "a".repeat(40),
-  incidentCategory: "none"
+  incidentCategory: "none",
 };
 ```
 
@@ -695,15 +690,15 @@ export function readScoreLedger(path) {}
 
 ```js
 {
-  sampleSize,
-  disclosurePasses,
-  acceptedWithMinorOrLess,
-  medianUsefulness,
-  medianFactualConsistency,
-  medianElapsedMs,
-  totalCostUsd,
-  incidentCount,
-  pass
+  (sampleSize,
+    disclosurePasses,
+    acceptedWithMinorOrLess,
+    medianUsefulness,
+    medianFactualConsistency,
+    medianElapsedMs,
+    totalCostUsd,
+    incidentCount,
+    pass);
 }
 ```
 
@@ -732,6 +727,7 @@ git commit -m "feat: add hosted Stage A evaluation ledger"
 ### Task 7: Add the H0 activation record and preflight
 
 **Files:**
+
 - Create: `scripts/alpha-ticker-stage-a-hosted/activation-record.mjs`
 - Create: `scripts/alpha-ticker-stage-a-hosted/preflight.sh`
 - Create: `test/alpha-ticker-stage-a-hosted-activation.test.ts`
@@ -808,6 +804,7 @@ git commit -m "ops: add hosted Stage A activation preflight"
 ### Task 8: Add evidence collection and exact-resource teardown controls
 
 **Files:**
+
 - Create: `scripts/alpha-ticker-stage-a-hosted/collect-evidence.mjs`
 - Create: `scripts/alpha-ticker-stage-a-hosted/teardown.sh`
 - Create: `test/alpha-ticker-stage-a-hosted-evidence.test.ts`
@@ -890,6 +887,7 @@ git commit -m "ops: add hosted Stage A evidence and teardown controls"
 ### Task 9: Write the hosted operations and decision documents
 
 **Files:**
+
 - Create: `docs/alpha-ticker-stage-a-hosted/runbook.md`
 - Create: `docs/alpha-ticker-stage-a-hosted/evidence-index.md`
 - Create: `docs/alpha-ticker-stage-a-hosted/limitations.md`
@@ -960,6 +958,7 @@ git commit -m "docs: add hosted Stage A operating gate"
 ### Task 10: Execute Gate H0 without Fly deployment or model use
 
 **Files:**
+
 - Create locally, ignored: `.generated/alpha-ticker-stage-a-hosted/activation.json`
 - Update after pass: `docs/alpha-ticker-stage-a-hosted/activation-approval.md`
 
@@ -1044,6 +1043,7 @@ Stop here unless H0 passed every item.
 ### Task 11: Execute Gate H1, egress proxy and immutable sandbox publication
 
 **Files:**
+
 - Modify automatically: `deploy/layers/alpha-ticker-stage-a-hosted/qm.config.jsonc`
 - Update: `docs/alpha-ticker-stage-a-hosted/evidence-index.md`
 
@@ -1124,6 +1124,7 @@ git commit -m "ops: pin hosted Stage A sandbox image"
 ### Task 12: Execute Gate H2, controlled deployment and live smoke tests
 
 **Files:**
+
 - Write ignored evidence: `.generated/alpha-ticker-stage-a-hosted/live-checks.json`
 - Update: `docs/alpha-ticker-stage-a-hosted/evidence-index.md`
 
@@ -1178,11 +1179,12 @@ Expected: no duplicate apps, databases, buckets, or sandbox registry.
 
 - [ ] **Step 7: Record content-minimized results**
 
-Write only check ids, status, timestamps, revisions, and resource-name hashes to `live-checks.json`. Separately capture the exact app, Managed Postgres, Tigris, and sandbox-registry ids needed for teardown in `.generated/alpha-ticker-stage-a-hosted/resource-inventory.json`; set mode `0600` and verify it is ignored. Do not store URLs containing tokens, emails, prompts, responses, or model request bodies.
+Write only check ids, status, timestamps, revisions, and resource-name hashes to `live-checks.json`. Separately capture provider-supplied immutable IDs for Fly apps, Managed Postgres, and the sandbox registry in `.generated/alpha-ticker-stage-a-hosted/resource-inventory.json`; set mode `0600` and verify it is ignored. Fly's Tigris list surface exposes no separate immutable ID, so record its exact bucket name explicitly as a name-bound deletion key and do not claim immutable object-storage identity. Do not store URLs containing tokens, emails, prompts, responses, or model request bodies.
 
 ### Task 13: Execute Gate H3 safety drills
 
 **Files:**
+
 - Update ignored evidence: `.generated/alpha-ticker-stage-a-hosted/live-checks.json`
 - Update: `docs/alpha-ticker-stage-a-hosted/evidence-index.md`
 
@@ -1217,6 +1219,7 @@ H4 starts only with zero isolation, egress, budget, revocation, durability, and 
 ### Task 14: Execute Gate H4, the five-day evaluation
 
 **Files:**
+
 - Write ignored: `.generated/alpha-ticker-stage-a-hosted/scores.jsonl`
 - Update ignored: `.generated/alpha-ticker-stage-a-hosted/live-checks.json`
 
@@ -1256,6 +1259,7 @@ After all 15 pairs or any stop condition, deny further model use and move direct
 ### Task 15: Execute Gate H5, teardown and decision
 
 **Files:**
+
 - Generate ignored: `.generated/alpha-ticker-stage-a-hosted/evidence-manifest.json`
 - Update: `docs/alpha-ticker-stage-a-hosted/evidence-index.md`
 - Update: `docs/alpha-ticker-stage-a-hosted/decision-memo.md`

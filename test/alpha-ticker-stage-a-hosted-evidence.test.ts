@@ -183,7 +183,11 @@ function createEvidenceFixture() {
       id: index === 0 ? privateAppId : `private-app-identifier-${index}`,
     })),
     managedPostgres: { name: "alpha-ticker-stage-a-hosted-pg", id: privateDatabaseId },
-    objectStorage: { name: "alpha-ticker-stage-a-hosted-data", id: "storage-private-id" },
+    objectStorage: {
+      name: "alpha-ticker-stage-a-hosted-data",
+      identityKind: "name-bound",
+      deletionKey: "alpha-ticker-stage-a-hosted-data",
+    },
     sandboxRegistry: { name: "alpha-ticker-stage-a-hosted-sandboxes", id: "sandbox-private-id" },
   });
   writeLiveChecks(generated);

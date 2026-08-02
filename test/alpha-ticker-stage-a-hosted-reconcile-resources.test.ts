@@ -31,12 +31,13 @@ const mpgEmpty = "No managed postgres clusters found in organization personal\n"
 
 type ReconciliationState = "not-started" | "unresolved" | "complete";
 type InventoryEntry = { name: string; id: string };
+type NameBoundInventoryEntry = { name: string; identityKind: "name-bound"; deletionKey: string };
 interface Inventory {
   flyOrg: "personal";
   h2ResourceReconciliation: ReconciliationState;
   apps: InventoryEntry[];
   managedPostgres: InventoryEntry | null;
-  objectStorage: InventoryEntry | null;
+  objectStorage: NameBoundInventoryEntry | null;
   sandboxRegistry: InventoryEntry | null;
 }
 
@@ -242,6 +243,16 @@ test("resource reconciler rejects non-exact inventory schemas and lifecycle misu
       ...inventory(),
       managedPostgres: { name: mpgName, id: "unexpected-pre-h2-postgres-id" },
     },
+    {
+      ...inventory(),
+      h2ResourceReconciliation: "complete",
+      objectStorage: { name: storageName, id: storageName },
+    },
+    {
+      ...inventory(),
+      h2ResourceReconciliation: "complete",
+      objectStorage: { name: storageName, identityKind: "name-bound", deletionKey: `${storageName}-other` },
+    },
     { ...inventory(), apps: [] },
   ];
   for (const value of cases) {
@@ -266,7 +277,7 @@ test("resource reconciler rejects non-exact inventory schemas and lifecycle misu
   }
 });
 
-test("resource reconciler records approved apps and exact MPG and Tigris identities", () => {
+test("resource reconciler records immutable MPG and explicitly name-bound Tigris identity", () => {
   const harness = createHarness(inventory({ h2ResourceReconciliation: "unresolved" }));
   try {
     harness.setFlyScenario({
@@ -292,7 +303,11 @@ test("resource reconciler records approved apps and exact MPG and Tigris identit
       { name: approvedApps[6], id: "existing-egress-id" },
     ]);
     assert.deepEqual(reconciled.managedPostgres, { name: mpgName, id: "current-postgres-id" });
-    assert.deepEqual(reconciled.objectStorage, { name: storageName, id: storageName });
+    assert.deepEqual(reconciled.objectStorage, {
+      name: storageName,
+      identityKind: "name-bound",
+      deletionKey: storageName,
+    });
     assert.deepEqual(reconciled.sandboxRegistry, {
       name: approvedApps[5],
       id: "existing-sandbox-registry-id",
@@ -363,7 +378,7 @@ test("resource reconciler rejects stale, mismatched, and colliding immutable ide
     {
       initial: inventory({
         h2ResourceReconciliation: "unresolved",
-        objectStorage: { name: storageName, id: storageName },
+        objectStorage: { name: storageName, identityKind: "name-bound", deletionKey: storageName },
       }),
       fly: { storageOutput: storageTable() },
     },
@@ -452,7 +467,7 @@ test("resource reconciler supports a later H3 complete-to-unresolved reconciliat
     inventory({
       h2ResourceReconciliation: "complete",
       managedPostgres: { name: mpgName, id: "current-postgres-id" },
-      objectStorage: { name: storageName, id: storageName },
+      objectStorage: { name: storageName, identityKind: "name-bound", deletionKey: storageName },
     }),
   );
   try {
@@ -469,7 +484,11 @@ test("resource reconciler supports a later H3 complete-to-unresolved reconciliat
     const completed = readInventory(harness.inventoryPath);
     assert.equal(completed.h2ResourceReconciliation, "complete");
     assert.deepEqual(completed.managedPostgres, { name: mpgName, id: "current-postgres-id" });
-    assert.deepEqual(completed.objectStorage, { name: storageName, id: storageName });
+    assert.deepEqual(completed.objectStorage, {
+      name: storageName,
+      identityKind: "name-bound",
+      deletionKey: storageName,
+    });
     assert.doesNotMatch(readFileSync(harness.callLog, "utf8"), /qm.*up/i);
   } finally {
     harness.cleanup();

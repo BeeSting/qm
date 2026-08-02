@@ -165,6 +165,7 @@ No agent deployment is started at this gate.
 - Push write-only secrets.
 - Deploy the minimum service set.
 - Verify TLS, authentication allowlisting, admin separation, database durability, object-storage round trip, sandbox identity metadata, and idempotent redeployment.
+- Preserve provider-supplied immutable IDs for Fly apps and Managed Postgres. Model Tigris explicitly as name-bound because Fly exposes bucket name and organization but no separate immutable bucket ID; same-name recreation invalidates continuity evidence.
 - Verify that no connector provider is configured, connector start attempts fail closed, and no Slack bot, browser, public link, or production endpoint is available.
 - Before the first participant turn, set and read back the durable organization egress policy to the one approved control-plane host.
 - Verify that Sprite network policy permits only the egress proxy and that the proxy denies an unapproved external host.

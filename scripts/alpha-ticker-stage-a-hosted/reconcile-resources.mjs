@@ -175,7 +175,24 @@ function validateInventory(value) {
   });
   const optionalEntry = (entry, expectedName) => (entry === null ? null : validateEntry(entry, expectedName));
   const managedPostgres = optionalEntry(value.managedPostgres, MPG_NAME);
-  const objectStorage = optionalEntry(value.objectStorage, STORAGE_NAME);
+  const objectStorage =
+    value.objectStorage === null
+      ? null
+      : (() => {
+          exactObject(value.objectStorage, ["name", "identityKind", "deletionKey"]);
+          if (
+            value.objectStorage.name !== STORAGE_NAME ||
+            value.objectStorage.identityKind !== "name-bound" ||
+            value.objectStorage.deletionKey !== STORAGE_NAME
+          ) {
+            fail();
+          }
+          return Object.freeze({
+            name: STORAGE_NAME,
+            identityKind: "name-bound",
+            deletionKey: STORAGE_NAME,
+          });
+        })();
   const sandboxRegistry = optionalEntry(value.sandboxRegistry, SANDBOX_REGISTRY_NAME);
   if (value.h2ResourceReconciliation === "not-started" && (managedPostgres !== null || objectStorage !== null)) fail();
   return Object.freeze({
@@ -435,10 +452,12 @@ function parseStorage(text, existing) {
       fail();
     }
     names.add(name);
-    if (name === STORAGE_NAME) target = { name: STORAGE_NAME, id: STORAGE_NAME };
+    if (name === STORAGE_NAME) {
+      target = { name: STORAGE_NAME, identityKind: "name-bound", deletionKey: STORAGE_NAME };
+    }
   }
   if (existing !== null) {
-    if (target === null || target.id !== existing.id) fail();
+    if (target === null || target.deletionKey !== existing.deletionKey) fail();
     return existing;
   }
   return target;

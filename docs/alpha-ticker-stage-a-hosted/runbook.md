@@ -191,7 +191,7 @@ The egress probe must first complete its silent authenticated positive canary, t
 
 ### Gate H2: Controlled Deployment
 
-Push secrets through the verified repository-local QM executable, review the plan, deploy the minimum service set, and run live checks. The committed reconciler is the only H2/H3 inventory mutation path. It queries Fly apps, Managed Postgres, and Tigris without retaining raw provider snapshots, preserves captured immutable identifiers, and atomically advances the exact `"h2ResourceReconciliation"` field. The committed parser follows Fly's real application JSON shape and requires `Organization.Slug` to equal `personal`.
+Push secrets through the verified repository-local QM executable, review the plan, deploy the minimum service set, and run live checks. The committed reconciler is the only H2/H3 inventory mutation path. It queries Fly apps, Managed Postgres, and Tigris without retaining raw provider snapshots, preserves provider-supplied immutable identifiers for Fly apps and Managed Postgres, and atomically advances the exact `"h2ResourceReconciliation"` field. Fly's Tigris list surface exposes only bucket `NAME` and `ORG`, so object storage is recorded explicitly as `{ "identityKind": "name-bound", "deletionKey": "alpha-ticker-stage-a-hosted-data" }` rather than claiming a fabricated immutable ID. The committed Fly app parser follows the provider's real JSON shape and requires `Organization.Slug` to equal `personal`.
 
 #### Deployment lifecycle wrapper
 

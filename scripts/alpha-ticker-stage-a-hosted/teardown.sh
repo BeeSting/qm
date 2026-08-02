@@ -188,7 +188,22 @@ function validateInventory() {
   }
   const optionalEntry = (entry, expectedName) => (entry === null ? false : Boolean(validateEntry(entry, expectedName)));
   const managedPostgresCaptured = optionalEntry(value.managedPostgres, "alpha-ticker-stage-a-hosted-pg");
-  const objectStorageCaptured = optionalEntry(value.objectStorage, "alpha-ticker-stage-a-hosted-data");
+  const objectStorageCaptured = (() => {
+    if (value.objectStorage === null) return false;
+    exactObject(
+      value.objectStorage,
+      ["name", "identityKind", "deletionKey"],
+      "resource-inventory-invalid",
+    );
+    if (
+      value.objectStorage.name !== "alpha-ticker-stage-a-hosted-data" ||
+      value.objectStorage.identityKind !== "name-bound" ||
+      value.objectStorage.deletionKey !== "alpha-ticker-stage-a-hosted-data"
+    ) {
+      stop("resource-inventory-invalid");
+    }
+    return true;
+  })();
   optionalEntry(value.sandboxRegistry, "alpha-ticker-stage-a-hosted-sandboxes");
   if (value.h2ResourceReconciliation === "not-started" && (managedPostgresCaptured || objectStorageCaptured)) {
     stop("resource-inventory-invalid");

@@ -685,6 +685,12 @@ function validateInventory(snapshot, { requireFullInventory = false } = {}) {
     if (ids.has(entry.id)) fail("inventory invalid");
     ids.add(entry.id);
   };
+  const validateNameBoundEntry = (entry, expectedName) => {
+    exactOwnKeys(entry, ["name", "identityKind", "deletionKey"], "inventory invalid");
+    if (entry.name !== expectedName || entry.identityKind !== "name-bound" || entry.deletionKey !== expectedName) {
+      fail("inventory invalid");
+    }
+  };
   for (const entry of value.apps) {
     if (!HOSTED_APPS.includes(entry?.name) || appNames.has(entry.name)) fail("inventory invalid");
     validateEntry(entry, entry.name);
@@ -700,7 +706,6 @@ function validateInventory(snapshot, { requireFullInventory = false } = {}) {
   }
   for (const [entry, expectedName] of [
     [value.managedPostgres, "alpha-ticker-stage-a-hosted-pg"],
-    [value.objectStorage, "alpha-ticker-stage-a-hosted-data"],
     [value.sandboxRegistry, "alpha-ticker-stage-a-hosted-sandboxes"],
   ]) {
     if (entry === null) {
@@ -708,6 +713,11 @@ function validateInventory(snapshot, { requireFullInventory = false } = {}) {
     } else {
       validateEntry(entry, expectedName);
     }
+  }
+  if (value.objectStorage === null) {
+    if (requireFullInventory) fail("inventory invalid");
+  } else {
+    validateNameBoundEntry(value.objectStorage, "alpha-ticker-stage-a-hosted-data");
   }
 }
 

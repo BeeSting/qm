@@ -106,7 +106,9 @@ process.exit(Number.isInteger(result.status) ? result.status : 1);
     managedPostgres:
       scenario.captureDataResources === false ? null : { name: dataResources[0], id: "private-postgres-id" },
     objectStorage:
-      scenario.captureDataResources === false ? null : { name: dataResources[1], id: "private-storage-id" },
+      scenario.captureDataResources === false
+        ? null
+        : { name: dataResources[1], identityKind: "name-bound", deletionKey: dataResources[1] },
     sandboxRegistry:
       scenario.captureSandboxRegistry === false
         ? null
