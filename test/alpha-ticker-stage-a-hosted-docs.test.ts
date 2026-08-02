@@ -30,6 +30,7 @@ test("hosted runbook defines the complete H0-H5 operating boundary", () => {
     runbook,
     [
       "Fly organization: `personal`",
+      "QM organization id: `alpha-ticker-stage-a-hosted`",
       "Region: `jnb`",
       "Provider: `openai`",
       "Model: `gpt-5.6-terra`",
@@ -76,16 +77,19 @@ test("hosted runbook defines the complete H0-H5 operating boundary", () => {
       "node scripts/alpha-ticker-stage-a-hosted/check-boundary.mjs",
       "git diff --check",
       "bash scripts/alpha-ticker-stage-a-hosted/preflight.sh",
-      "npm exec --no -- qm check",
-      "npm exec --no -- qm sandbox build --dry-run",
-      "npm exec --no -- qm plan",
+      'HOSTED_ROOT="$REPO_ROOT/deploy/layers/alpha-ticker-stage-a-hosted"',
+      'QM_BIN="$HOSTED_ROOT/node_modules/.bin/qm"',
+      'node "$REPO_ROOT/scripts/alpha-ticker-stage-a-hosted/activation-record.mjs" \\\n  --verify-qm-install --root "$HOSTED_ROOT"',
+      '"$QM_BIN" check',
+      '"$QM_BIN" sandbox build --dry-run',
+      '"$QM_BIN" plan',
       "fly apps create alpha-ticker-stage-a-egress --org personal",
-      "npm exec --no -- qm sandbox publish",
-      "npm exec --no -- qm secrets push",
-      "npm exec --no -- qm up",
-      "npm exec --no -- qm doctor",
-      "npm exec --no -- qm check --live",
-      "npm exec --no -- qm conformance",
+      '"$QM_BIN" sandbox publish',
+      '"$QM_BIN" secrets push',
+      '"$QM_BIN" up',
+      '"$QM_BIN" doctor',
+      '"$QM_BIN" check --live',
+      '"$QM_BIN" conformance',
       "node scripts/alpha-ticker-stage-a-hosted/collect-evidence.mjs",
       "bash scripts/alpha-ticker-stage-a-hosted/teardown.sh --dry-run",
       "STAGE_A_DESTROY_CONFIRM=alpha-ticker-stage-a-hosted",
@@ -112,6 +116,52 @@ test("hosted runbook defines the complete H0-H5 operating boundary", () => {
     ],
     "runbook",
   );
+
+  requireAll(
+    runbook,
+    [
+      '"$QM_BIN" setup',
+      'chmod 600 "$HOSTED_ROOT/.env"',
+      'git -C "$REPO_ROOT" check-ignore --quiet deploy/layers/alpha-ticker-stage-a-hosted/.env',
+      "At H0, leave `FLY_SANDBOX_API_TOKEN` unset",
+      'awk -F= \'$1 == "CAPABILITY_SECRET" { print }\' "$HOSTED_ROOT/.env" |',
+      "fly secrets import -a alpha-ticker-stage-a-egress",
+      'Run `"$QM_BIN" setup` a second time',
+      "FLY_SANDBOX_API_TOKEN",
+      "curl -sS -o /dev/null -w '%{http_code}\\n' https://example.com",
+      "Expected output is exactly `403`",
+      "ORG_BUDGET_USD_PER_WINDOW=0",
+      "denied before any provider request",
+      "ORG_BUDGET_USD_PER_WINDOW=45",
+      '"$QM_BIN" up --only core',
+      "replace the revoked key",
+      'node --test "$REPO_ROOT/test/alpha-ticker-stage-a-hosted-policy.test.ts" \\\n  "$REPO_ROOT/test/alpha-ticker-stage-a-hosted-boundary.test.ts"',
+      "UTC start timestamp",
+      "fifth consecutive business day",
+      "no later than 168 hours",
+      "daily-portfolio-briefing",
+      "investment-question",
+      "partner-meeting-preparation",
+      "product-architecture-handover",
+      "decision-memory-draft",
+    ],
+    "runbook execution contract",
+  );
+
+  const verifier = runbook.indexOf("--verify-qm-install --root");
+  const firstQmCommand = runbook.indexOf('"$QM_BIN" check');
+  const preflight = runbook.indexOf("bash scripts/alpha-ticker-stage-a-hosted/preflight.sh");
+  const firstFlyMutation = runbook.indexOf("fly apps create alpha-ticker-stage-a-egress --org personal");
+  const setupCount = runbook.match(/^"\$QM_BIN" setup$/gm)?.length ?? 0;
+  const modeCheckCount = runbook.match(/^chmod 600 "\$HOSTED_ROOT\/\.env"$/gm)?.length ?? 0;
+  const ignoreCheckCount =
+    runbook.match(/^git -C "\$REPO_ROOT" check-ignore --quiet deploy\/layers\/alpha-ticker-stage-a-hosted\/\.env$/gm)
+      ?.length ?? 0;
+  assert.ok(verifier >= 0 && verifier < firstQmCommand, "local QM verification must precede QM commands");
+  assert.ok(preflight >= 0 && preflight < firstFlyMutation, "H0 preflight must precede Fly mutation");
+  assert.equal(setupCount, 5, "H0, H1, both budget transitions, and key replacement must use local setup");
+  assert.equal(modeCheckCount, 5, "every local setup must restore mode 0600");
+  assert.equal(ignoreCheckCount, 5, "every local setup must recheck that the input is ignored");
 });
 
 test("hosted evidence index is aggregate-only and names every controlled artifact", () => {
@@ -132,6 +182,11 @@ test("hosted evidence index is aggregate-only and names every controlled artifac
       "90,000 ms",
       "US$45",
       "SHA-256",
+      "`pass`, `fail`, or `not-run`",
+      "complete fixed H2/H3 register",
+      "any `fail` or `not-run` status",
+      "overall manifest `pass: false`",
+      "does not retain the granular H2/H3 statuses",
     ],
     "evidence index",
   );
@@ -197,5 +252,10 @@ test("hosted operating documents exclude identities, secrets, captured content, 
   assert.doesNotMatch(
     corpus,
     /(?:fly apps destroy --all|docker (?:system|volume|network) prune|rm -rf|--auto-approve)/i,
+  );
+  assert.doesNotMatch(corpus, /\bnpm\s+exec\b|\bnpx\b/i);
+  assert.doesNotMatch(
+    corpus,
+    /^\s*(?:\$\s*)?qm\s+(?:check|plan|sandbox|setup|secrets|up|doctor|conformance|status|down)\b/im,
   );
 });

@@ -17,6 +17,12 @@ All generated evidence stays ignored under `.generated/alpha-ticker-stage-a-host
 
 The evidence manifest must state `contentCaptured: false` and remain mode `0600`.
 
+## Live-Check Status Semantics
+
+The private live-check input must contain the complete fixed H2/H3 register. Every entry has exactly one of these statuses: `pass`, `fail`, or `not-run`. Collection is fail-closed: any `fail` or `not-run` status makes the aggregate `live-checks` check fail and sets the overall manifest `pass: false`.
+
+The retained aggregate manifest does not retain the granular H2/H3 statuses or check identifiers. It retains the input hash and aggregate result, preventing private operational detail from leaking into decision evidence while preserving a verifiable fail-closed outcome.
+
 ## Hashed Artifacts
 
 The manifest hashes these eight artifacts:
