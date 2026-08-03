@@ -15,9 +15,3 @@ export interface EvidenceManifest {
 
 export function assertEvidenceSafe(manifest: unknown): void;
 export function buildEvidenceManifest(input: Omit<EvidenceManifest, "contentCaptured">): EvidenceManifest;
-export function collectEvidence(input: {
-  repoRoot?: string;
-  tests: number;
-  failures: number;
-  timestamp?: string;
-}): EvidenceManifest;

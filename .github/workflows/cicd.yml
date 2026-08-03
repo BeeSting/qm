@@ -20,10 +20,13 @@ jobs:
         with:
           node-version-file: .node-version
           cache: npm
-          cache-dependency-path: package-lock.json
+          cache-dependency-path: |
+            package-lock.json
+            deploy/layers/alpha-ticker-stage-a-hosted/package-lock.json
       - name: Install and typecheck
         run: |
           npm ci
+          npm ci --prefix deploy/layers/alpha-ticker-stage-a-hosted
           npm run typecheck
 
   core-tests:

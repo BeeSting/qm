@@ -275,7 +275,7 @@ function createPreflightScenario(scenario: PreflightScenario = {}): PreflightRes
     writeShim(
       join(qmPackageBinRoot, "qm.js"),
       `case "$*" in\n` +
-        `  "check") printf '%s\\n' ${shellQuote(sentinel)} >&2; ${scenario.mutateEnvAfterQmCheck ? `rm -f .env; printf '%s\\n' ${shellQuote(envContent.trim())} > .env; chmod 600 .env` : ":"}; exit ${scenario.qmCheckExit ?? 0} ;;\n` +
+        `  "check") printf '%s\\n' ${shellQuote(sentinel)} >&2; ${scenario.mutateEnvAfterQmCheck ? `printf '%s\\n' ${shellQuote(`${envSecretName}=changed-secret-value`)} > .env; chmod 600 .env` : ":"}; exit ${scenario.qmCheckExit ?? 0} ;;\n` +
         `  "sandbox build --dry-run") printf '%s\\n' ${shellQuote(sentinel)} >&2; exit ${scenario.qmBuildExit ?? 0} ;;\n` +
         `  "plan") [ "\${NO_COLOR-}" = "1" ] || { printf '%s\\n' 'colorized-output'; exit 1; }; printf '%s\\n' ${shellQuote(scenario.qmPlanOutput ?? `error: ${missingImagePin}`)}; exit ${scenario.qmPlanExit ?? 1} ;;\n` +
         `  *) exit 99 ;;\n` +

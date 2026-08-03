@@ -1,10 +1,14 @@
 {
   "$schema": "https://unpkg.com/knip@6/schema.json",
   "treatConfigHintsAsErrors": true,
-  "ignoreBinaries": ["flyctl", "tail", "cloudflared"],
+  "ignoreBinaries": ["flyctl", "tail", "cloudflared", "mkfifo", "openssl"],
   "ignoreDependencies": ["@openai/codex", "opencode-ai"],
   "ignoreIssues": {
     "scripts/migrate-principals-to-email.d.mts": ["files"],
+    "scripts/alpha-ticker-stage-a/check-boundary.d.mts": ["files"],
+    "scripts/alpha-ticker-stage-a/collect-evidence.d.mts": ["files"],
+    "scripts/alpha-ticker-stage-a-hosted/activation-record.mjs": ["exports"],
+    "scripts/alpha-ticker-stage-a-hosted/validate-required-secrets.mjs": ["exports"],
     "plugins/chassis/src/source-auth-sign.ts": ["exports"],
     "src/slack/lib.ts": ["exports", "types"]
   },
@@ -21,6 +25,9 @@
         "scripts/dev/twin-instance.ts",
         "scripts/dev/twin-pump.ts",
         "scripts/migrate-principals-to-email.mjs",
+        "scripts/alpha-ticker-stage-a-hosted/check-boundary.mjs",
+        "scripts/alpha-ticker-stage-a-hosted/probe-egress.mjs",
+        "scripts/alpha-ticker-stage-a-hosted/reconcile-resources.mjs",
         "scripts/mine-slack-scenarios.ts",
         "scripts/skills-materialize-smoke.ts",
         "scripts/slack-user-token.ts"

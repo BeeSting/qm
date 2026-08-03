@@ -29,12 +29,7 @@ run_with_timeout() {
 }
 
 file_identity() {
-  identity=$(stat -f '%d:%i:%Lp' "$1" 2>/dev/null || true)
-  case "$identity" in
-    *:*:600) ;;
-    *) identity=$(stat -c '%d:%i:%a' "$1" 2>/dev/null || true) ;;
-  esac
-  printf '%s' "$identity"
+  node "$SCRIPT_DIR/activation-record.mjs" --file-identity --input "$1" 2>/dev/null || true
 }
 
 env_is_unchanged() {
@@ -141,7 +136,7 @@ if [ ! -f "$ENV_FILE" ] || [ -L "$ENV_FILE" ]; then
 fi
 ENV_IDENTITY=$(file_identity "$ENV_FILE")
 case "$ENV_IDENTITY" in
-  *:*:600) ;;
+  *:*:600:*:*) ;;
   *) fail "env-file" ;;
 esac
 if ! git check-ignore --quiet "$DEPLOYMENT_REL/.env" >/dev/null 2>&1; then
@@ -149,9 +144,9 @@ if ! git check-ignore --quiet "$DEPLOYMENT_REL/.env" >/dev/null 2>&1; then
 fi
 pass "env-file"
 
-# This detects replacement and permission drift between checks. It cannot close
-# the final local-write race between stat and a QM process opening the file;
-# the operator-controlled local account remains inside the trust boundary.
+# This detects replacement, permission drift, and content mutation between checks.
+# It cannot close the final local-write race between validation and a QM process
+# opening the file; the operator-controlled local account remains inside the trust boundary.
 if ! env_is_unchanged; then
   fail "env-file"
 fi

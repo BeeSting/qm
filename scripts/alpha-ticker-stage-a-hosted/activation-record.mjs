@@ -36,6 +36,7 @@ const SECRET_KEY = /(?:api[_-]?key|authorization|credential|password|private[_-]
 const PARTICIPANT_IDENTITY_KEY = /^(?:participants?|participant(?:email|identit(?:y|ies)|ids?|names?))$/i;
 const EMAIL_VALUE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const ACTIVATION_INPUT_LIMIT_BYTES = 64 * 1024;
+const ENV_INPUT_LIMIT_BYTES = 1024 * 1024;
 const FLY_JSON_INPUT_LIMIT_BYTES = 1024 * 1024;
 const QM_METADATA_INPUT_LIMIT_BYTES = 1024 * 1024;
 const TIMED_COMMAND_OUTPUT_LIMIT_BYTES = 1024 * 1024;
@@ -325,6 +326,46 @@ function readJsonMetadata(input, field) {
   }
 }
 
+function calculatePrivateFileIdentity(input) {
+  let descriptor;
+  try {
+    descriptor = openSync(input, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const before = fstatSync(descriptor, { bigint: true });
+    const mode = Number(before.mode & 0o777n);
+    if (!before.isFile() || mode !== 0o600 || before.size > BigInt(ENV_INPUT_LIMIT_BYTES)) invalid("envFile");
+
+    const hash = createHash("sha256");
+    const buffer = Buffer.alloc(64 * 1024);
+    let totalBytes = 0;
+    while (true) {
+      const count = readSync(descriptor, buffer, 0, buffer.length, null);
+      if (count === 0) break;
+      totalBytes += count;
+      if (totalBytes > ENV_INPUT_LIMIT_BYTES) invalid("envFile");
+      hash.update(buffer.subarray(0, count));
+    }
+
+    const after = fstatSync(descriptor, { bigint: true });
+    if (
+      before.dev !== after.dev ||
+      before.ino !== after.ino ||
+      before.mode !== after.mode ||
+      before.size !== after.size ||
+      before.mtimeNs !== after.mtimeNs ||
+      before.ctimeNs !== after.ctimeNs
+    ) {
+      invalid("envFile");
+    }
+
+    return `${before.dev}:${before.ino}:${mode.toString(8)}:${before.size}:${hash.digest("hex")}`;
+  } catch (error) {
+    if (error instanceof ActivationRecordError) throw error;
+    invalid("envFile");
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
+}
+
 export function calculateQmPackageTreeDigest(packageRoot) {
   const hash = createHash("sha256");
   let entryCount = 0;
@@ -447,6 +488,9 @@ function commandFromArgs(args) {
   }
   if (args.length === 3 && args[0] === "--verify-qm-install" && args[1] === "--root" && args[2]) {
     return { command: "verify-qm-install", root: args[2] };
+  }
+  if (args.length === 3 && args[0] === "--file-identity" && args[1] === "--input" && args[2]) {
+    return { command: "file-identity", input: args[2] };
   }
   invalid("input");
 }
@@ -585,6 +629,11 @@ async function runCli() {
       outputKind = "qm-install";
       assertQmInstall(request.root);
       process.stdout.write("qm-install: pass\n");
+      return;
+    }
+    if (request.command === "file-identity") {
+      outputKind = "file-identity";
+      process.stdout.write(calculatePrivateFileIdentity(request.input));
       return;
     }
 

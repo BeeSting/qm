@@ -81,7 +81,7 @@ export function buildEvidenceManifest({ commit, qmBaseline, timestamp, checks, c
   return manifest;
 }
 
-export function collectEvidence({ repoRoot = process.cwd(), tests, failures, timestamp = new Date().toISOString() }) {
+function collectEvidence({ repoRoot = process.cwd(), tests, failures, timestamp = new Date().toISOString() }) {
   const root = resolve(repoRoot);
   const deployment = join(root, "deploy/layers/alpha-ticker-stage-a");
   const baseline = JSON.parse(readFileSync(join(root, "UPSTREAM.lock.json"), "utf8"));
