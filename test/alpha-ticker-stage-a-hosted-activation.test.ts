@@ -850,6 +850,17 @@ test("hosted preflight rejects env replacement between QM commands", () => {
   assertPreflightFailure({ mutateEnvAfterQmCheck: true }, "env-file");
 });
 
+test("hosted preflight accepts the lock-pinned QM plan banner before the missing-image error", () => {
+  const result = createPreflightScenario({
+    qmPlanOutput: `\n=== qm up — alpha-ticker-stage-a-hosted (target: fly, plan) ===\nerror: ${missingImagePin}`,
+  });
+  try {
+    assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
+  } finally {
+    result.cleanup();
+  }
+});
+
 test("hosted preflight accepts only the known fail-closed missing-image-pin plan result", () => {
   assertPreflightFailure({ qmPlanExit: 0, qmPlanOutput: "plan unexpectedly passed" }, "qm-plan-missing-image-pin");
   assertPreflightFailure({ qmPlanExit: 2, qmPlanOutput: `error: ${missingImagePin}` }, "qm-plan-missing-image-pin");

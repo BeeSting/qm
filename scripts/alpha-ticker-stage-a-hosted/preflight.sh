@@ -13,6 +13,9 @@ ACTIVATION_FILE="$REPO_ROOT/.generated/alpha-ticker-stage-a-hosted/activation.js
 ENV_FILE="$DEPLOYMENT_ROOT/.env"
 QM_BIN="$DEPLOYMENT_ROOT/node_modules/.bin/qm"
 EXPECTED_PLAN_ERROR='error: "sandbox.app" is set but no sandbox layer image is pinned; run `qm sandbox publish` to build and record the digest-pinned "sandbox.image" agents boot from'
+EXPECTED_PLAN_OUTPUT=$(
+  printf '\n=== qm up \342\200\224 alpha-ticker-stage-a-hosted (target: fly, plan) ===\n%s' "$EXPECTED_PLAN_ERROR"
+)
 COMMAND_TIMEOUT_SECONDS=${ALPHA_TICKER_PREFLIGHT_TIMEOUT_SECONDS:-30}
 
 pass() {
@@ -168,7 +171,10 @@ if ! env_is_unchanged; then
 fi
 plan_output=$(cd "$DEPLOYMENT_ROOT" && run_with_timeout "$QM_BIN" plan 2>&1)
 plan_status=$?
-if [ "$plan_status" -ne 1 ] || [ "$plan_output" != "$EXPECTED_PLAN_ERROR" ]; then
+if [ "$plan_status" -ne 1 ]; then
+  fail "qm-plan-missing-image-pin"
+fi
+if [ "$plan_output" != "$EXPECTED_PLAN_ERROR" ] && [ "$plan_output" != "$EXPECTED_PLAN_OUTPUT" ]; then
   fail "qm-plan-missing-image-pin"
 fi
 pass "qm-plan-missing-image-pin"
